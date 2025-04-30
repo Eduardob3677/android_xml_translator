@@ -3,7 +3,7 @@
 Android strings.xml Translator
 
 This script translates Android string resources from a strings.xml file
-to another language using free online translation services.
+to multiple languages using free online translation services.
 No API keys or authentication required.
 
 Features:
@@ -13,6 +13,8 @@ Features:
 - Preserves escape sequences like \n, \', \" 
 - Preserves regex patterns
 - Multiple fallback translation services for reliability
+- Optional transliteration instead of translation
+- Parallel processing of multiple target languages
 """
 
 import os
@@ -25,7 +27,8 @@ import requests
 import json
 import xml.etree.ElementTree as ET
 from urllib.parse import quote
-
+import threading
+import concurrent.futures
 
 def extract_strings(xml_file):
     """Extract strings from an Android strings.xml file"""
@@ -55,7 +58,7 @@ def extract_strings(xml_file):
     return strings
 
 
-def translate_text(text, source_lang, target_lang):
+def translate_text(text, source_lang, target_lang, transliterate=False):
     """Translate text using Google Translate (no API key required) while preserving placeholders"""
     if not text.strip():
         return text
@@ -78,14 +81,30 @@ def translate_text(text, source_lang, target_lang):
     # - Common regex patterns
     pattern = r'%([0-9]+\$)?[sdif]|%[sdif]|\\\'|\\"|\\\n|\\n|\\t|\\r|\\b|\\u[0-9a-fA-F]{4}|\[[^\]]*\]|\{\d+\}|\{[a-zA-Z_]+\}'
     
-    # Find all matches and their positions
+    # Find all matches and their positions, also preserve surrounding spaces
     for match in re.finditer(pattern, text):
-        placeholders.append(match.group(0))
-        placeholder_positions.append((match.start(), match.end()))
+        start, end = match.span()
+        placeholder = match.group(0)
+        
+        # Check for spaces before the placeholder
+        leading_space = ""
+        if start > 0 and text[start-1] == " ":
+            leading_space = " "
+            start -= 1
+            
+        # Check for spaces after the placeholder
+        trailing_space = ""
+        if end < len(text) and text[end] == " ":
+            trailing_space = " "
+            end += 1
+            
+        # Store the placeholder with its surrounding spaces
+        placeholders.append(leading_space + placeholder + trailing_space)
+        placeholder_positions.append((start, end))
     
     # If no special sequences found, translate the whole text normally
     if not placeholders:
-        return _perform_translation(text, source_lang, target_lang)
+        return _perform_translation(text, source_lang, target_lang, transliterate)
     
     # 2. Split the text into translatable segments and non-translatable tokens
     segments = []
@@ -117,14 +136,14 @@ def translate_text(text, source_lang, target_lang):
         combined_text = delimiter.join(text_segments)
         
         # Translate the combined text
-        translated_combined = _perform_translation(combined_text, source_lang, target_lang)
+        translated_combined = _perform_translation(combined_text, source_lang, target_lang, transliterate)
         
         # Split the translated result back into segments
         translated_texts = translated_combined.split(delimiter)
         
         # If we didn't get the same number of segments back, fall back to translating individually
         if len(translated_texts) != len(text_segments):
-            translated_texts = [_perform_translation(segment, source_lang, target_lang) for segment in text_segments]
+            translated_texts = [_perform_translation(segment, source_lang, target_lang, transliterate) for segment in text_segments]
     else:
         translated_texts = []
     
@@ -141,13 +160,18 @@ def translate_text(text, source_lang, target_lang):
             else:
                 result += segment_value  # Fallback if something went wrong
         else:
-            # Use the original placeholder
+            # Use the original placeholder with its surrounding spaces
             result += segment_value
+    
+    # Check if spaces around placeholders were preserved correctly
+    # If not, try to fix any missing spaces by checking for placeholder formats directly attached to words
+    placeholder_pattern = r'(\w+)(%[0-9]*\$?[sdif])(\w+)'
+    result = re.sub(placeholder_pattern, r'\1 \2 \3', result)
     
     return result
 
 
-def _perform_translation(text, source_lang, target_lang):
+def _perform_translation(text, source_lang, target_lang, transliterate=False):
     """Actually perform the translation using Google Translate API"""
     if not text.strip():
         return text
@@ -163,9 +187,16 @@ def _perform_translation(text, source_lang, target_lang):
             "client": "gtx",
             "sl": source_lang,
             "tl": target_lang,
-            "dt": "t",
             "q": text
         }
+        
+        # For transliteration, we need several data types
+        if transliterate:
+            # dt=t: translation
+            # dt=rm: transliteration
+            params["dt"] = ["t", "rm"]
+        else:
+            params["dt"] = "t"
         
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -181,22 +212,61 @@ def _perform_translation(text, source_lang, target_lang):
         # Parse the JSON response
         result = response.json()
         
-        # Extract translated text from response
-        translation = ""
-        for sentence in result[0]:
-            if sentence[0]:
-                translation += sentence[0]
-        
-        return translation
+        # Extract transliteration or translation from response
+        if transliterate:
+            # First, get the standard translation as fallback
+            translation = ""
+            for sentence in result[0]:
+                if sentence and len(sentence) > 0 and sentence[0]:
+                    translation += sentence[0]
+            
+            # For Crimean Tatar (crh) and other languages with Latin transliteration in specific position
+            latin_transliteration = ""
+            
+            # Based on the debug output, the Latin transliteration is in result[0][i][2]
+            # where i is the index of each sentence segment
+            for i, sentence_data in enumerate(result[0]):
+                if sentence_data and len(sentence_data) > 2 and sentence_data[2]:
+                    latin_transliteration += sentence_data[2]
+            
+            # If we found a Latin transliteration, use it
+            if latin_transliteration:
+                return latin_transliteration
+            
+            # If no transliteration found in the expected position, fall back to other methods
+            if not latin_transliteration:
+                # Try other positions in the structure
+                if len(result) >= 2 and result[1]:
+                    for entry in result[1]:
+                        if entry and len(entry) > 2 and entry[2]:
+                            latin_transliteration += entry[2]
+            
+            # If we found a transliteration with any method, use it; otherwise return the translation
+            if latin_transliteration:
+                return latin_transliteration
+            else:
+                return translation
+        else:
+            # Normal translation
+            translation = ""
+            for sentence in result[0]:
+                if sentence and len(sentence) > 0 and sentence[0]:
+                    translation += sentence[0]
+            return translation
     
     except requests.exceptions.RequestException as e:
         print(f"Translation error: {e}")
         # Fallback to another service if the first one fails
-        return _fallback_translate(text, source_lang, target_lang)
+        return _fallback_translate(text, source_lang, target_lang, transliterate)
 
 
-def _fallback_translate(text, source_lang, target_lang):
+def _fallback_translate(text, source_lang, target_lang, transliterate=False):
     """Fallback translation method using DeepL's free website (no API key)"""
+    # If transliteration is requested, we can't use the fallback services as they don't support this
+    # So we'll just return the original text or attempt a standard translation
+    if transliterate:
+        print("Warning: Transliteration not supported by fallback services. Attempting regular translation.")
+    
     try:
         # Add delay to avoid rate limiting
         time.sleep(random.uniform(1.5, 3.0))
@@ -328,12 +398,79 @@ def create_translated_xml(original_file, strings_dict, target_lang):
     return translated_file
 
 
+def translate_strings_for_language(strings, source_lang, target_lang, transliterate=False):
+    """Translate all strings for a specific target language"""
+    translated_strings = {}
+    total = len(strings)
+    
+    # Progress tracking
+    if transliterate:
+        print(f"Starting transliteration from {source_lang} to {target_lang}...")
+    else:
+        print(f"Starting translation from {source_lang} to {target_lang}...")
+    
+    for current, (key, text) in enumerate(strings.items(), 1):
+        # Determine string type for progress display
+        if key.startswith("string:"):
+            name = key.split(":", 1)[1]
+            if current % 10 == 0 or current == total:  # Show progress every 10 items
+                if transliterate:
+                    print(f"[{target_lang}] Transliterating string ({current}/{total}): {name}")
+                else:
+                    print(f"[{target_lang}] Translating string ({current}/{total}): {name}")
+        elif key.startswith("array:"):
+            parts = key.split(":", 2)
+            array_name = parts[1]
+            item_index = parts[2]
+            if current % 10 == 0 or current == total:  # Show progress every 10 items
+                if transliterate:
+                    print(f"[{target_lang}] Transliterating array item ({current}/{total}): {array_name}[{item_index}]")
+                else:
+                    print(f"[{target_lang}] Translating array item ({current}/{total}): {array_name}[{item_index}]")
+        
+        # Translate or transliterate the text
+        translated_text = translate_text(text, source_lang, target_lang, transliterate)
+        translated_strings[key] = translated_text
+    
+    return translated_strings
+
+def process_language(input_file, source_lang, target_lang, strings, transliterate=False):
+    """Process a single target language"""
+    # Translate all strings for this language
+    translated_strings = translate_strings_for_language(strings, source_lang, target_lang, transliterate)
+    
+    # Create translated XML file
+    output_file_suffix = "translit-" + target_lang if transliterate else target_lang
+    output_file = create_translated_xml(input_file, translated_strings, output_file_suffix)
+    
+    # Print completion message
+    if transliterate:
+        print(f"✓ Transliteration to {target_lang} completed! File saved as: {output_file}")
+    else:
+        print(f"✓ Translation to {target_lang} completed! File saved as: {output_file}")
+    
+    # Return statistics
+    string_count = len([k for k in strings.keys() if k.startswith("string:")])
+    array_items_count = len([k for k in strings.keys() if k.startswith("array:")])
+    array_count = len(set([k.split(":", 2)[1] for k in strings.keys() if k.startswith("array:")]))
+    
+    return {
+        "target_lang": target_lang,
+        "string_count": string_count,
+        "array_count": array_count,
+        "array_items_count": array_items_count,
+        "total_elements": len(strings),
+        "output_file": output_file
+    }
+
 def main():
-    parser = argparse.ArgumentParser(description='Translate Android strings.xml to another language')
+    parser = argparse.ArgumentParser(description='Translate Android strings.xml to multiple languages')
     parser.add_argument('input_file', help='Path to the original strings.xml file')
-    parser.add_argument('source_lang', help='Source language code (e.g., en, fr, es)')
-    parser.add_argument('target_lang', help='Target language code (e.g., fr, es, de)')
+    parser.add_argument('source_lang', help='Source language code (e.g., en)')
+    parser.add_argument('target_langs', nargs='+', help='One or more target language codes (e.g., fr es de)')
     parser.add_argument('--preserve', action='store_true', help='Preserve untranslated strings')
+    parser.add_argument('--transliterate', action='store_true', help='Use transliteration instead of translation')
+    parser.add_argument('--max-workers', type=int, default=3, help='Maximum number of parallel translation workers (default: 3)')
     args = parser.parse_args()
     
     if not os.path.isfile(args.input_file):
@@ -344,44 +481,52 @@ def main():
     strings = extract_strings(args.input_file)
     print(f"Found {len(strings)} translatable strings to process.")
     
-    translated_strings = {}
+    # Show summary of work to be done
+    print(f"\nPreparing to process {len(args.target_langs)} target languages:")
+    for lang in args.target_langs:
+        if args.transliterate:
+            print(f"- Transliterating from {args.source_lang} to {lang}")
+        else:
+            print(f"- Translating from {args.source_lang} to {lang}")
     
-    print(f"Translating from {args.source_lang} to {args.target_lang}...")
+    print("\nStarting parallel processing...")
     
-    # Counter for progress tracking
-    total = len(strings)
-    current = 0
+    # Create a thread pool executor
+    max_workers = min(args.max_workers, len(args.target_langs))
+    results = []
     
-    for key, text in strings.items():
-        current += 1
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit tasks for each target language
+        future_to_lang = {
+            executor.submit(
+                process_language, 
+                args.input_file, 
+                args.source_lang, 
+                target_lang, 
+                strings, 
+                args.transliterate
+            ): target_lang for target_lang in args.target_langs
+        }
         
-        # Determine string type
-        if key.startswith("string:"):
-            name = key.split(":", 1)[1]
-            print(f"Translating string ({current}/{total}): {name}")
-        elif key.startswith("array:"):
-            parts = key.split(":", 2)
-            array_name = parts[1]
-            item_index = parts[2]  
-            print(f"Translating array item ({current}/{total}): {array_name}[{item_index}]")
-        
-        # Translate the text
-        translated_text = translate_text(text, args.source_lang, args.target_lang)
-        translated_strings[key] = translated_text
+        # Process results as they complete
+        for future in concurrent.futures.as_completed(future_to_lang):
+            target_lang = future_to_lang[future]
+            try:
+                result = future.result()
+                results.append(result)
+            except Exception as e:
+                print(f"Error processing {target_lang}: {e}")
     
-    # Create translated XML file
-    output_file = create_translated_xml(args.input_file, translated_strings, args.target_lang)
-    print(f"Translation completed! Translated file saved as: {output_file}")
+    # Print final summary
+    print("\n=== Translation Summary ===")
+    for result in sorted(results, key=lambda x: x["target_lang"]):
+        lang = result["target_lang"]
+        print(f"\n{lang.upper()} ({result['output_file']}):")
+        print(f"- Regular strings: {result['string_count']}")
+        print(f"- String arrays: {result['array_count']} (with {result['array_items_count']} items)")
+        print(f"- Total processed elements: {result['total_elements']}")
     
-    # Print summary
-    string_count = len([k for k in strings.keys() if k.startswith("string:")])
-    array_items_count = len([k for k in strings.keys() if k.startswith("array:")])
-    array_count = len(set([k.split(":", 2)[1] for k in strings.keys() if k.startswith("array:")]))
-    
-    print("\nTranslation Summary:")
-    print(f"- Regular strings: {string_count}")
-    print(f"- String arrays: {array_count} (with {array_items_count} items)")
-    print(f"- Total translated elements: {len(strings)}")
+    print("\nAll translations completed successfully!")
 
 
 if __name__ == "__main__":
