@@ -6,6 +6,7 @@ No API keys or authentication required.
 Features:
 - Respects translatable="false" attribute
 - Handles string-array elements
+- Handles plurals elements
 - Preserves formatting placeholders like %s, %d, %1$s
 - Preserves escape sequences like \n, \', \" 
 - Preserves regex patterns
