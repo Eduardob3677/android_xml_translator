@@ -9,6 +9,7 @@ No API keys or authentication required.
 Features:
 - Respects translatable="false" attribute
 - Handles string-array elements
+- Handles plurals elements
 - Preserves formatting placeholders like %s, %d, %1$s
 - Preserves escape sequences like \n, \', \" 
 - Preserves regex patterns
@@ -54,6 +55,17 @@ def extract_strings(xml_file):
             for i, item_elem in enumerate(array_elem.findall("item")):
                 if item_elem.text:
                     strings[f"array:{array_name}:{i}"] = item_elem.text
+    
+    # Extract plurals elements
+    for plurals_elem in root.findall("plurals"):
+        plurals_name = plurals_elem.get("name")
+        translatable = plurals_elem.get("translatable", "true").lower()
+        
+        if plurals_name and translatable != "false":
+            for item_elem in plurals_elem.findall("item"):
+                quantity = item_elem.get("quantity")
+                if quantity and item_elem.text:
+                    strings[f"plurals:{plurals_name}:{quantity}"] = item_elem.text
     
     return strings
 
@@ -360,6 +372,9 @@ def create_translated_xml(original_file, strings_dict, target_lang):
     # Track string-arrays to update
     arrays_updated = set()
     
+    # Track plurals to update
+    plurals_updated = set()
+    
     # Update regular strings
     for string_elem in root.findall("string"):
         name = string_elem.get("name")
@@ -385,6 +400,28 @@ def create_translated_xml(original_file, strings_dict, target_lang):
             # Update the items
             for i, item_elem in enumerate(array_elem.findall("item")):
                 key = f"array:{array_name}:{i}"
+                if key in strings_dict:
+                    item_elem.text = strings_dict[key]
+    
+    # Update plurals
+    for plurals_elem in root.findall("plurals"):
+        plurals_name = plurals_elem.get("name")
+        
+        # Check if this plural has any translated items
+        plurals_has_translations = False
+        for item_elem in plurals_elem.findall("item"):
+            quantity = item_elem.get("quantity")
+            key = f"plurals:{plurals_name}:{quantity}"
+            if key in strings_dict:
+                plurals_has_translations = True
+                break
+                
+        if plurals_has_translations:
+            plurals_updated.add(plurals_name)
+            # Update the items
+            for item_elem in plurals_elem.findall("item"):
+                quantity = item_elem.get("quantity")
+                key = f"plurals:{plurals_name}:{quantity}"
                 if key in strings_dict:
                     item_elem.text = strings_dict[key]
     
@@ -427,6 +464,15 @@ def translate_strings_for_language(strings, source_lang, target_lang, transliter
                     print(f"[{target_lang}] Transliterating array item ({current}/{total}): {array_name}[{item_index}]")
                 else:
                     print(f"[{target_lang}] Translating array item ({current}/{total}): {array_name}[{item_index}]")
+        elif key.startswith("plurals:"):
+            parts = key.split(":", 2)
+            plurals_name = parts[1]
+            quantity = parts[2]
+            if current % 10 == 0 or current == total:  # Show progress every 10 items
+                if transliterate:
+                    print(f"[{target_lang}] Transliterating plural item ({current}/{total}): {plurals_name}[{quantity}]")
+                else:
+                    print(f"[{target_lang}] Translating plural item ({current}/{total}): {plurals_name}[{quantity}]")
         
         # Translate or transliterate the text
         translated_text = translate_text(text, source_lang, target_lang, transliterate)
@@ -453,12 +499,16 @@ def process_language(input_file, source_lang, target_lang, strings, transliterat
     string_count = len([k for k in strings.keys() if k.startswith("string:")])
     array_items_count = len([k for k in strings.keys() if k.startswith("array:")])
     array_count = len(set([k.split(":", 2)[1] for k in strings.keys() if k.startswith("array:")]))
+    plurals_items_count = len([k for k in strings.keys() if k.startswith("plurals:")])
+    plurals_count = len(set([k.split(":", 2)[1] for k in strings.keys() if k.startswith("plurals:")]))
     
     return {
         "target_lang": target_lang,
         "string_count": string_count,
         "array_count": array_count,
         "array_items_count": array_items_count,
+        "plurals_count": plurals_count,
+        "plurals_items_count": plurals_items_count,
         "total_elements": len(strings),
         "output_file": output_file
     }
@@ -524,6 +574,7 @@ def main():
         print(f"\n{lang.upper()} ({result['output_file']}):")
         print(f"- Regular strings: {result['string_count']}")
         print(f"- String arrays: {result['array_count']} (with {result['array_items_count']} items)")
+        print(f"- Plurals: {result['plurals_count']} (with {result['plurals_items_count']} items)")
         print(f"- Total processed elements: {result['total_elements']}")
     
     print("\nAll translations completed successfully!")
