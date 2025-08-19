@@ -116,18 +116,20 @@ def extract_strings(xml_file):
     return strings
 
 
-def sanitize_android_text(text: str) -> str:
-    """Post-procesa el texto para que sea válido en strings.xml de Android.
-
-    - Escapa apóstrofes no escapados (') como \' para evitar errores de aapt.
-    - No modifica los apóstrofes ya escapados (\\').
+def sanitize_for_android_xml(text: str) -> str:
+    """Escapa comillas simples y dobles no escapadas para recursos Android.
+    - Convierte comillas tipográficas a ASCII y las escapa si es necesario.
+    - No altera secuencias ya escapadas (usa negative lookbehind).
     """
     if not text:
         return text
-    # Escapar apóstrofes no escapados
+    # Normaliza comillas tipográficas a ASCII
+    text = text.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
+    # Escapa comillas simples no escapadas
     text = re.sub(r"(?<!\\)'", r"\\'", text)
+    # Escapa comillas dobles no escapadas
+    text = re.sub(r'(?<!\\)"', r'\\"', text)
     return text
-
 
 def translate_text(text, source_lang, target_lang, transliterate=False):
     """Traduce texto usando Microsoft Translator preservando placeholders. Optimizado para endpoint privado."""
@@ -157,7 +159,8 @@ def translate_text(text, source_lang, target_lang, transliterate=False):
         placeholder_positions.append((start, end))
 
     if not placeholders:
-        return _perform_translation(text, source_lang, target_lang, transliterate)
+        translated = _perform_translation(text, source_lang, target_lang, transliterate)
+        return sanitize_for_android_xml(translated)
 
     # Dividir en segmentos traducibles y no traducibles
     segments = []
@@ -199,7 +202,7 @@ def translate_text(text, source_lang, target_lang, transliterate=False):
             result += segment_value
     placeholder_pattern = r'(\w+)(%[0-9]*\$?[sdif])(\w+)'
     result = re.sub(placeholder_pattern, r'\1 \2 \3', result)
-    return result
+    return sanitize_for_android_xml(result)
 
 
 def _perform_translation(text_or_batch, source_lang, target_lang, transliterate=False, batch_mode=False):
@@ -211,7 +214,7 @@ def _perform_translation(text_or_batch, source_lang, target_lang, transliterate=
             return text_or_batch
         texts = [text_or_batch]
 
-    endpoint = MS_TRANSLATOR_CONFIG.get("endpoint")
+    endpoint = MS_TRANSLATOR_CONFIG.get("endpoint") or "https://api.cognitive.microsofttranslator.com"
     key = MS_TRANSLATOR_CONFIG.get("key")
     region = MS_TRANSLATOR_CONFIG.get("region")
     api_version = MS_TRANSLATOR_CONFIG.get("api_version", "3.0")
@@ -380,8 +383,8 @@ def translate_strings_for_language(strings, source_lang, target_lang, transliter
             parts = key.split(":", 2)
             print(f"[{target_lang}] {'Transliterating' if transliterate else 'Translating'} plural item ({current}/{total}): {parts[1]}[{parts[2]}]")
 
-    translated_text = translate_text(text, source_lang, target_lang, transliterate)
-    translated_strings[key] = sanitize_android_text(translated_text)
+        translated_text = translate_text(text, source_lang, target_lang, transliterate)
+        translated_strings[key] = translated_text
 
     return translated_strings
 
