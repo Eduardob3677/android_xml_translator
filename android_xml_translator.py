@@ -116,6 +116,19 @@ def extract_strings(xml_file):
     return strings
 
 
+def sanitize_android_text(text: str) -> str:
+    """Post-procesa el texto para que sea válido en strings.xml de Android.
+
+    - Escapa apóstrofes no escapados (') como \' para evitar errores de aapt.
+    - No modifica los apóstrofes ya escapados (\\').
+    """
+    if not text:
+        return text
+    # Escapar apóstrofes no escapados
+    text = re.sub(r"(?<!\\)'", r"\\'", text)
+    return text
+
+
 def translate_text(text, source_lang, target_lang, transliterate=False):
     """Traduce texto usando Microsoft Translator preservando placeholders. Optimizado para endpoint privado."""
     if not text.strip():
@@ -367,8 +380,8 @@ def translate_strings_for_language(strings, source_lang, target_lang, transliter
             parts = key.split(":", 2)
             print(f"[{target_lang}] {'Transliterating' if transliterate else 'Translating'} plural item ({current}/{total}): {parts[1]}[{parts[2]}]")
 
-        translated_text = translate_text(text, source_lang, target_lang, transliterate)
-        translated_strings[key] = translated_text
+    translated_text = translate_text(text, source_lang, target_lang, transliterate)
+    translated_strings[key] = sanitize_android_text(translated_text)
 
     return translated_strings
 
