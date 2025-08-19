@@ -1,20 +1,63 @@
 # Android strings.xml Translator
-This script translates Android string resources from a strings.xml file
-to multiple languages using free online translation services.
-No API keys or authentication required.
 
-Features:
-- Respects translatable="false" attribute
-- Handles string-array elements
-- Handles plurals elements
-- Preserves formatting placeholders like %s, %d, %1$s
-- Preserves escape sequences like \n, \', \" 
-- Preserves regex patterns
-- Multiple fallback translation services for reliability
-- Optional transliteration instead of translation
-- Parallel processing of multiple target languages
+Traductor de recursos `strings.xml` para Android usando Microsoft Translator (Azure AI Translator).
 
-Usage:
+Características:
+
+- Respeta `translatable="false"`
+- Soporta `string-array` y `plurals`
+- Preserva placeholders (`%s`, `%d`, `%1$s`) y secuencias de escape
+- Opción de transliteración (`--transliterate`) a script latino cuando es posible
+- Procesamiento paralelo de múltiples idiomas
+
+Requisitos
+
+- Cuenta de Azure y un recurso Translator con una clave de suscripción.
+
+Configuración
+
+- Variables de entorno (recomendado):
+	- `AZURE_TRANSLATOR_KEY` (obligatoria)
+	- `AZURE_TRANSLATOR_REGION` (requerida si tu recurso no es global)
+	- `AZURE_TRANSLATOR_ENDPOINT` (opcional, por defecto `https://api.cognitive.microsofttranslator.com`)
+	- `AZURE_TRANSLATOR_API_VERSION` (opcional, por defecto `3.0`)
+	- `AZURE_TRANSLATOR_CATEGORY` (opcional, para Custom Translator)
+	- `AZURE_TRANSLATOR_TEXT_TYPE` (`plain` o `html`, por defecto `plain`)
+
+o parámetros CLI equivalentes:
+
+- `--ms-key`, `--ms-region`, `--ms-endpoint`, `--ms-api-version`, `--ms-category`, `--ms-text-type`.
+
+Archivo de configuración (opcional)
+
+- Puedes pasar `--config config.json` con las mismas claves: `endpoint`, `key`, `region`, `api_version`, `category`, `text_type`.
+- Precedencia de valores: defaults < archivo de configuración < variables de entorno < parámetros de CLI.
+- Ejemplo: `config.example.json` incluido en el repo.
+
+Uso
+
+```bash
+# Ejemplo básico (con variables de entorno ya exportadas)
+python3 android_xml_translator.py app/src/main/res/values/strings.xml en fr es de
+
+# Pasando la clave y región por CLI
+python3 android_xml_translator.py app/src/main/res/values/strings.xml en fr es \
+	--ms-key "$AZURE_TRANSLATOR_KEY" \
+	--ms-region "westeurope"
+
+# Usando archivo de configuración
+python3 android_xml_translator.py app/src/main/res/values/strings.xml en fr es \
+	--config config.json
+
+# Transliteración (por ejemplo, de uk a latino)
+python3 android_xml_translator.py strings.xml uk en --transliterate
 ```
-python3 android_xml_translator.py strings.xml en uk pl ja
-```
+
+Salida
+
+- Se generan archivos `strings-<lang>.xml` al lado del archivo original, por ejemplo: `strings-fr.xml`.
+
+Notas
+
+- Para transliteración, el script usa `toScript=Latn` de Microsoft Translator cuando está disponible.
+- El script realiza reintentos ante errores 429/5xx con backoff.

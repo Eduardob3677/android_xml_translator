@@ -2,20 +2,25 @@
 """
 Android strings.xml Translator
 
-This script translates Android string resources from a strings.xml file
-to multiple languages using free online translation services.
-No API keys or authentication required.
+Este script traduce recursos de texto de Android desde un archivo strings.xml
+usando la API de Microsoft Translator (Azure AI Translator).
 
-Features:
-- Respects translatable="false" attribute
-- Handles string-array elements
-- Handles plurals elements
-- Preserves formatting placeholders like %s, %d, %1$s
-- Preserves escape sequences like \n, \', \" 
-- Preserves regex patterns
-- Multiple fallback translation services for reliability
-- Optional transliteration instead of translation
-- Parallel processing of multiple target languages
+Características:
+- Respeta el atributo translatable="false"
+- Soporta elementos string-array
+- Soporta elementos plurals
+- Preserva placeholders de formato como %s, %d, %1$s
+- Preserva secuencias de escape como \n, \", \"
+- Preserva patrones regex comunes
+- Soporta transliteración usando toScript=Latn cuando se solicita
+- Procesamiento en paralelo de múltiples idiomas destino
+
+Requisitos de configuración (CLI o variables de entorno):
+- Clave: --ms-key o AZURE_TRANSLATOR_KEY
+- Región (si aplica): --ms-region o AZURE_TRANSLATOR_REGION
+- Endpoint: --ms-endpoint o AZURE_TRANSLATOR_ENDPOINT (por defecto: https://api.cognitive.microsofttranslator.com)
+- Versión API: --ms-api-version (por defecto: 3.0)
+- Categoría personalizada: --ms-category o AZURE_TRANSLATOR_CATEGORY (opcional)
 """
 
 import os
@@ -30,6 +35,16 @@ import xml.etree.ElementTree as ET
 from urllib.parse import quote
 import threading
 import concurrent.futures
+
+# Configuración global de Microsoft Translator. Se inicializa en main()
+MS_TRANSLATOR_CONFIG = {
+    "endpoint": os.getenv("AZURE_TRANSLATOR_ENDPOINT", "https://api.cognitive.microsofttranslator.com"),
+    "key": os.getenv("AZURE_TRANSLATOR_KEY"),
+    "region": os.getenv("AZURE_TRANSLATOR_REGION"),
+    "api_version": "3.0",
+    "category": os.getenv("AZURE_TRANSLATOR_CATEGORY"),
+    "text_type": "plain",
+}
 
 def extract_strings(xml_file):
     """Extract strings from an Android strings.xml file"""
@@ -71,7 +86,7 @@ def extract_strings(xml_file):
 
 
 def translate_text(text, source_lang, target_lang, transliterate=False):
-    """Translate text using Google Translate (no API key required) while preserving placeholders"""
+    """Traduce texto usando Microsoft Translator preservando placeholders"""
     if not text.strip():
         return text
     
@@ -146,16 +161,19 @@ def translate_text(text, source_lang, target_lang, transliterate=False):
         # Join with a special delimiter that's unlikely to appear in the text
         delimiter = "⟐⟐⟐SPLIT⟐⟐⟐"
         combined_text = delimiter.join(text_segments)
-        
+
         # Translate the combined text
         translated_combined = _perform_translation(combined_text, source_lang, target_lang, transliterate)
-        
+
         # Split the translated result back into segments
         translated_texts = translated_combined.split(delimiter)
-        
+
         # If we didn't get the same number of segments back, fall back to translating individually
         if len(translated_texts) != len(text_segments):
-            translated_texts = [_perform_translation(segment, source_lang, target_lang, transliterate) for segment in text_segments]
+            translated_texts = [
+                _perform_translation(segment, source_lang, target_lang, transliterate)
+                for segment in text_segments
+            ]
     else:
         translated_texts = []
     
@@ -184,184 +202,88 @@ def translate_text(text, source_lang, target_lang, transliterate=False):
 
 
 def _perform_translation(text, source_lang, target_lang, transliterate=False):
-    """Actually perform the translation using Google Translate API"""
+    """Realiza la traducción usando Microsoft Translator API"""
     if not text.strip():
         return text
-    
-    try:
-        # Add delay to avoid rate limiting
-        time.sleep(random.uniform(0.8, 2.0))
-        
-        # Use Google Translate without API key
-        url = f"https://translate.googleapis.com/translate_a/single"
-        
-        params = {
-            "client": "gtx",
-            "sl": source_lang,
-            "tl": target_lang,
-            "q": text
-        }
-        
-        # For transliteration, we need several data types
-        if transliterate:
-            # dt=t: translation
-            # dt=rm: transliteration
-            params["dt"] = ["t", "rm"]
-        else:
-            params["dt"] = "t"
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-        }
-        
-        response = requests.get(url, params=params, headers=headers)
-        response.raise_for_status()
-        
-        # Parse the JSON response
-        result = response.json()
-        
-        # Extract transliteration or translation from response
-        if transliterate:
-            # First, get the standard translation as fallback
-            translation = ""
-            for sentence in result[0]:
-                if sentence and len(sentence) > 0 and sentence[0]:
-                    translation += sentence[0]
-            
-            # For Crimean Tatar (crh) and other languages with Latin transliteration in specific position
-            latin_transliteration = ""
-            
-            # Based on the debug output, the Latin transliteration is in result[0][i][2]
-            # where i is the index of each sentence segment
-            for i, sentence_data in enumerate(result[0]):
-                if sentence_data and len(sentence_data) > 2 and sentence_data[2]:
-                    latin_transliteration += sentence_data[2]
-            
-            # If we found a Latin transliteration, use it
-            if latin_transliteration:
-                return latin_transliteration
-            
-            # If no transliteration found in the expected position, fall back to other methods
-            if not latin_transliteration:
-                # Try other positions in the structure
-                if len(result) >= 2 and result[1]:
-                    for entry in result[1]:
-                        if entry and len(entry) > 2 and entry[2]:
-                            latin_transliteration += entry[2]
-            
-            # If we found a transliteration with any method, use it; otherwise return the translation
-            if latin_transliteration:
-                return latin_transliteration
-            else:
-                return translation
-        else:
-            # Normal translation
-            translation = ""
-            for sentence in result[0]:
-                if sentence and len(sentence) > 0 and sentence[0]:
-                    translation += sentence[0]
-            return translation
-    
-    except requests.exceptions.RequestException as e:
-        print(f"Translation error: {e}")
-        # Fallback to another service if the first one fails
-        return _fallback_translate(text, source_lang, target_lang, transliterate)
+
+    # Pequeño jitter para convivir con concurrencia
+    time.sleep(random.uniform(0.1, 0.3))
+
+    endpoint = MS_TRANSLATOR_CONFIG.get("endpoint")
+    key = MS_TRANSLATOR_CONFIG.get("key")
+    region = MS_TRANSLATOR_CONFIG.get("region")
+    api_version = MS_TRANSLATOR_CONFIG.get("api_version", "3.0")
+    category = MS_TRANSLATOR_CONFIG.get("category")
+    text_type = MS_TRANSLATOR_CONFIG.get("text_type", "plain")
+
+    if not key:
+        raise RuntimeError("Falta la clave de Microsoft Translator. Usa --ms-key o AZURE_TRANSLATOR_KEY.")
+
+    url = endpoint.rstrip('/') + "/translate"
+
+    params = {
+        "api-version": api_version,
+        "from": source_lang,
+        "to": target_lang,
+        "textType": text_type,
+    }
+    if category:
+        params["category"] = category
+    # Si se solicita transliteración, intentamos obtener salida en Latn
+    if transliterate:
+        params["toScript"] = "Latn"
+
+    headers = {
+        "Ocp-Apim-Subscription-Key": key,
+        "Content-Type": "application/json",
+    }
+    # Algunos recursos requieren región
+    if region:
+        headers["Ocp-Apim-Subscription-Region"] = region
+
+    body = [{"text": text}]
+
+    # Reintentos simples ante 429/5xx
+    attempts = 0
+    backoff = 0.5
+    while attempts < 3:
+        attempts += 1
+        try:
+            resp = requests.post(url, params=params, headers=headers, json=body, timeout=30)
+            # Manejo de límites: si 429, reintentar con backoff exponencial y jitter
+            if resp.status_code in (429, 500, 502, 503, 504):
+                time.sleep(backoff + random.uniform(0, 0.3))
+                backoff *= 2
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+
+            if not isinstance(data, list) or not data:
+                return text
+
+            first = data[0]
+            translations = first.get("translations", [])
+            if not translations:
+                return text
+
+            t0 = translations[0]
+            # Si pedimos transliteración y viene en el objeto
+            if transliterate:
+                translit_obj = t0.get("transliteration")
+                if translit_obj and translit_obj.get("text"):
+                    return translit_obj["text"]
+            # Texto traducido normal
+            return t0.get("text", text)
+        except requests.exceptions.RequestException as e:
+            if attempts >= 3:
+                print(f"Translation error after retries: {e}")
+                return text
+            time.sleep(backoff + random.uniform(0, 0.2))
 
 
 def _fallback_translate(text, source_lang, target_lang, transliterate=False):
-    """Fallback translation method using DeepL's free website (no API key)"""
-    # If transliteration is requested, we can't use the fallback services as they don't support this
-    # So we'll just return the original text or attempt a standard translation
-    if transliterate:
-        print("Warning: Transliteration not supported by fallback services. Attempting regular translation.")
-    
-    try:
-        # Add delay to avoid rate limiting
-        time.sleep(random.uniform(1.5, 3.0))
-        
-        # DeepL uses slightly different language codes
-        deepl_lang_codes = {
-            'en': 'EN',
-            'es': 'ES',
-            'fr': 'FR',
-            'de': 'DE',
-            'it': 'IT',
-            'pt': 'PT',
-            'ru': 'RU',
-            'ja': 'JA',
-            'zh': 'ZH',
-            'nl': 'NL',
-            'pl': 'PL',
-            # Add more as needed
-        }
-        
-        src = deepl_lang_codes.get(source_lang, source_lang.upper())
-        tgt = deepl_lang_codes.get(target_lang, target_lang.upper())
-        
-        # First we need to get cookies and authentication
-        session = requests.Session()
-        
-        # Get initial cookies
-        url = "https://www.deepl.com/translator"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://www.deepl.com/',
-            'Origin': 'https://www.deepl.com'
-        }
-        
-        session.get(url, headers=headers)
-        
-        # Now make the translation request
-        translate_url = "https://www2.deepl.com/jsonrpc"
-        
-        # Generate a random request ID
-        request_id = random.randint(1000000, 9999999)
-        
-        payload = {
-            "jsonrpc": "2.0",
-            "method": "LMT_handle_texts",
-            "params": {
-                "texts": [{"text": text}],
-                "lang": {
-                    "source_lang_user_selected": src,
-                    "target_lang": tgt
-                },
-                "timestamp": int(time.time() * 1000)
-            },
-            "id": request_id
-        }
-        
-        response = session.post(translate_url, json=payload, headers=headers)
-        response.raise_for_status()
-        response_json = response.json()
-        
-        if "result" in response_json and "texts" in response_json["result"]:
-            translation = response_json["result"]["texts"][0]["text"]
-            return translation
-        else:
-            print("DeepL fallback translation failed. Trying MyMemory...")
-            raise Exception("DeepL failed")
-            
-    except Exception as e:
-        print(f"Fallback translation error: {e}")
-        # If all fails, try a simpler third option
-        try:
-            # MyMemory translation API (free tier)
-            time.sleep(random.uniform(1.0, 2.0))
-            url = f"https://api.mymemory.translated.net/get?q={quote(text)}&langpair={source_lang}|{target_lang}"
-            response = requests.get(url)
-            response.raise_for_status()
-            result = response.json()
-            translation = result.get("responseData", {}).get("translatedText", text)
-            return translation
-        except Exception as e2:
-            print(f"MyMemory fallback translation error: {e2}")
-            return text  # Return original text if all translation attempts fail
+    """Obsoleto: ya no se usan servicios de respaldo externos."""
+    return text
 
 
 def create_translated_xml(original_file, strings_dict, target_lang):
@@ -521,12 +443,88 @@ def main():
     parser.add_argument('--preserve', action='store_true', help='Preserve untranslated strings')
     parser.add_argument('--transliterate', action='store_true', help='Use transliteration instead of translation')
     parser.add_argument('--max-workers', type=int, default=3, help='Maximum number of parallel translation workers (default: 3)')
+    parser.add_argument('--config', help='Path to a JSON config file with Microsoft Translator settings')
+    # Parámetros Microsoft Translator
+    parser.add_argument('--ms-endpoint', default=os.getenv('AZURE_TRANSLATOR_ENDPOINT', 'https://api.cognitive.microsofttranslator.com'), help='Microsoft Translator endpoint URL')
+    parser.add_argument('--ms-key', default=os.getenv('AZURE_TRANSLATOR_KEY'), help='Microsoft Translator subscription key')
+    parser.add_argument('--ms-region', default=os.getenv('AZURE_TRANSLATOR_REGION'), help='Microsoft Translator region (si aplica)')
+    parser.add_argument('--ms-api-version', default=os.getenv('AZURE_TRANSLATOR_API_VERSION', '3.0'), help='Microsoft Translator API version (default: 3.0)')
+    parser.add_argument('--ms-category', default=os.getenv('AZURE_TRANSLATOR_CATEGORY'), help='Custom category for custom translator (optional)')
+    parser.add_argument('--ms-text-type', default=os.getenv('AZURE_TRANSLATOR_TEXT_TYPE', 'plain'), choices=['plain','html'], help='Text type for translation (plain or html)')
     args = parser.parse_args()
     
     if not os.path.isfile(args.input_file):
         print(f"Error: Input file '{args.input_file}' not found.")
         return
     
+    # Inicializar configuración global de Translator con precedencia:
+    # defaults < config file < environment < CLI
+    defaults = {
+        "endpoint": 'https://api.cognitive.microsofttranslator.com',
+        "api_version": '3.0',
+        "text_type": 'plain',
+        "key": None,
+        "region": None,
+        "category": None,
+    }
+
+    # Cargar config desde archivo si se proporciona
+    file_cfg = {}
+    if args.config:
+        try:
+            with open(args.config, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    # normalizar claves esperadas
+                    file_cfg = {
+                        "endpoint": loaded.get("endpoint"),
+                        "key": loaded.get("key"),
+                        "region": loaded.get("region"),
+                        "api_version": loaded.get("api_version"),
+                        "category": loaded.get("category"),
+                        "text_type": loaded.get("text_type"),
+                    }
+        except Exception as e:
+            print(f"Warning: No se pudo leer el archivo de configuración: {e}")
+
+    # Config desde entorno (ya accesible vía os.getenv pero lo hacemos explícito)
+    env_cfg = {
+        "endpoint": os.getenv('AZURE_TRANSLATOR_ENDPOINT'),
+        "key": os.getenv('AZURE_TRANSLATOR_KEY'),
+        "region": os.getenv('AZURE_TRANSLATOR_REGION'),
+        "api_version": os.getenv('AZURE_TRANSLATOR_API_VERSION'),
+        "category": os.getenv('AZURE_TRANSLATOR_CATEGORY'),
+        "text_type": os.getenv('AZURE_TRANSLATOR_TEXT_TYPE'),
+    }
+
+    # Config desde CLI
+    cli_cfg = {
+        "endpoint": args.ms_endpoint,
+        "key": args.ms_key,
+        "region": args.ms_region,
+        "api_version": args.ms_api_version,
+        "category": args.ms_category,
+        "text_type": args.ms_text_type,
+    }
+
+    # Función de merge que prefiere valores no vacíos del dict2 sobre dict1
+    def merge(a, b):
+        out = dict(a)
+        for k, v in b.items():
+            if v is not None and v != '':
+                out[k] = v
+        return out
+
+    merged = merge(defaults, file_cfg)
+    merged = merge(merged, env_cfg)
+    merged = merge(merged, cli_cfg)
+
+    MS_TRANSLATOR_CONFIG.update(merged)
+
+    if not MS_TRANSLATOR_CONFIG.get("key"):
+        print("Error: Debes proporcionar la clave de Microsoft Translator con --ms-key o AZURE_TRANSLATOR_KEY.")
+        return
+
     print(f"Extracting strings from {args.input_file}...")
     strings = extract_strings(args.input_file)
     print(f"Found {len(strings)} translatable strings to process.")

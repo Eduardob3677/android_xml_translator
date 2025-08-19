@@ -1,0 +1,8 @@
+{
+  "endpoint": "https://api.cognitive.microsofttranslator.com",
+  "key": "YOUR_TRANSLATOR_KEY",
+  "region": "westeurope",
+  "api_version": "3.0",
+  "category": null,
+  "text_type": "plain"
+}
