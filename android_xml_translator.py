@@ -87,6 +87,77 @@ def _get_session():
         _thread_local.session = sess
     return sess
 
+def is_technical_string(text: str, name: str = "") -> bool:
+    """Detecta si un string contiene valores técnicos que no deben traducirse.
+    
+    Returns True si el string parece ser técnico/configuración y NO debe traducirse.
+    """
+    if not text or not text.strip():
+        return False
+    
+    text = text.strip()
+    
+    # Patterns técnicos que indican que NO se debe traducir
+    technical_patterns = [
+        # SVG/Path data
+        r'^[ML][0-9\s,.-]+[ZCLHVSQTA0-9\s,.-]*$',  # SVG path commands
+        r'path\([^)]+\)',  # path() function calls
+        
+        # URLs y URIs
+        r'^https?://',
+        r'^[a-zA-Z][a-zA-Z0-9+.-]*://',  # URI schemes
+        
+        # Valores hexadecimales y códigos
+        r'^#[0-9a-fA-F]+$',
+        r'^0x[0-9a-fA-F]+$',
+        
+        # Coordenadas y valores numéricos puros
+        r'^[\d\s,.()-]+$',
+        
+        # JSON/XML snippets
+        r'^[{[].*[}\]]$',
+        r'^<[^>]+>.*</[^>]+>$',
+        
+        # Nombres de archivos con extensión
+        r'\.[a-zA-Z0-9]{2,4}$',
+        
+        # Expresiones regulares
+        r'\\[dwsWDS]',
+        r'\[\^?\w+\]',
+        
+        # Códigos de programación
+        r'^[a-zA-Z_][a-zA-Z0-9_.]*\([^)]*\)$',  # function calls
+    ]
+    
+    # Nombres de strings que típicamente contienen valores técnicos
+    technical_name_patterns = [
+        r'.*_path(_data)?$',
+        r'.*_easing.*',
+        r'.*_config$',
+        r'.*_url$',
+        r'.*_uri$',
+        r'.*_regex$',
+        r'.*_pattern$',
+        r'.*_format$',
+        r'.*_template$',
+        r'.*_code$',
+        r'.*_id$',
+        r'.*_key$',
+        r'.*_token$',
+    ]
+    
+    # Verificar si el contenido del texto es técnico
+    for pattern in technical_patterns:
+        if re.match(pattern, text, re.IGNORECASE):
+            return True
+    
+    # Verificar si el nombre del string indica contenido técnico
+    for pattern in technical_name_patterns:
+        if re.match(pattern, name, re.IGNORECASE):
+            return True
+    
+    return False
+
 def extract_strings(xml_file):
     """Extract strings from an Android strings.xml file"""
     tree = ET.parse(xml_file)
@@ -100,6 +171,10 @@ def extract_strings(xml_file):
         translatable = string_elem.get("translatable", "true").lower()
         
         if name and string_elem.text and translatable != "false":
+            # Verificar si es un string técnico que no debe traducirse
+            if is_technical_string(string_elem.text, name):
+                print(f"{YELLOW}⚠️  Saltando string técnico:{RESET} {name} = {string_elem.text[:50]}...")
+                continue
             strings[f"string:{name}"] = string_elem.text
     
     # Extract string-array elements
@@ -110,6 +185,10 @@ def extract_strings(xml_file):
         if array_name and translatable != "false":
             for i, item_elem in enumerate(array_elem.findall("item")):
                 if item_elem.text:
+                    # Verificar si es un item técnico que no debe traducirse
+                    if is_technical_string(item_elem.text, f"{array_name}[{i}]"):
+                        print(f"{YELLOW}⚠️  Saltando array item técnico:{RESET} {array_name}[{i}] = {item_elem.text[:50]}...")
+                        continue
                     strings[f"array:{array_name}:{i}"] = item_elem.text
     
     # Extract plurals elements
@@ -121,6 +200,10 @@ def extract_strings(xml_file):
             for item_elem in plurals_elem.findall("item"):
                 quantity = item_elem.get("quantity")
                 if quantity and item_elem.text:
+                    # Verificar si es un plural técnico que no debe traducirse
+                    if is_technical_string(item_elem.text, f"{plurals_name}[{quantity}]"):
+                        print(f"{YELLOW}⚠️  Saltando plural técnico:{RESET} {plurals_name}[{quantity}] = {item_elem.text[:50]}...")
+                        continue
                     strings[f"plurals:{plurals_name}:{quantity}"] = item_elem.text
     
     return strings
