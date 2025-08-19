@@ -127,19 +127,14 @@ def translate_from_all_locales(locale_files: Dict[str, Path], source_lang: str, 
                 str(strings_xml),
                 target,
                 "--source-lang", source_lang,
+                "--in-place",
                 *translator_args,
             ])
 
-            generated = strings_xml.with_name(f"strings-{target}.xml")
-            if not generated.exists():
-                raise RuntimeError(f"No se generó el archivo esperado: {generated}")
-
-            merge_android_strings(str(target_file), str(generated), str(target_file))
-            try:
-                generated.unlink()
-            except FileNotFoundError:
-                pass
+            # El traductor sobreescribe el strings.xml de origen si usamos --in-place, así que debemos fusionar ese origen traducido con el target acumulado.
+            merge_android_strings(str(target_file), str(strings_xml), str(target_file))
             print(f"{BLUE}[{target}]{RESET} Merge {idx}/{total} desde locale {src_locale}")
+
         print(f"{GREEN}✓{RESET} {BOLD}{target}{RESET}: {target_file}")
 
 def merge_android_strings(base_xml_path: str, add_xml_path: str, out_xml_path: str):

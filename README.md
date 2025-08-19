@@ -38,15 +38,15 @@ Uso
 
 ```bash
 # Ejemplo básico (con variables de entorno ya exportadas)
-python3 android_xml_translator.py app/src/main/res/values/strings.xml en fr es de
+python3 android_xml_translator.py app/src/main/res/values/strings.xml es fr de --source-lang auto
 
 # Pasando la clave y región por CLI
-python3 android_xml_translator.py app/src/main/res/values/strings.xml en fr es \
+python3 android_xml_translator.py app/src/main/res/values/strings.xml es fr \
 	--ms-key "$AZURE_TRANSLATOR_KEY" \
 	--ms-region "westeurope"
 
 # Usando archivo de configuración
-python3 android_xml_translator.py app/src/main/res/values/strings.xml en fr es \
+python3 android_xml_translator.py app/src/main/res/values/strings.xml es fr \
 	--config config.json
 
 Rendimiento (endpoint privado)
@@ -81,7 +81,8 @@ Requisitos:
 Ejemplo:
 
 ```bash
-python3 apk_translate_pipeline.py app.apk en es fr pt-BR \
+python3 apk_translate_pipeline.py app.apk es fr pt-BR \
+	--source-lang auto \
 	--config config.example.json \
 	--keystore my.keystore --ks-alias myalias --ks-pass secret
 ```
@@ -89,7 +90,7 @@ python3 apk_translate_pipeline.py app.apk en es fr pt-BR \
 Qué hace:
 
 - Decompila el APK
-- Traduce `res/values/strings.xml` y coloca resultados en `res/values-<lang>/strings.xml` (o `values-<lang>-r<REGION>`)
+- Traduce y fusiona `strings.xml` de todas las carpetas `res/values*` hacia cada destino; escribe siempre en `res/values-<lang>/strings.xml` (o `values-<lang>-r<REGION>`)
 - Recompila
 - Zipalign (si disponible) y firma (si se provee keystore)
 
@@ -99,7 +100,7 @@ Soporta múltiples locales de origen:
 - Recomendado usar autodetección del idioma de origen pasando `auto` como `source_lang` cuando existan varias locales:
 
 ```bash
-python3 apk_translate_pipeline.py app.apk auto es fr
+python3 apk_translate_pipeline.py app.apk es fr --source-lang auto
 ```
 
 Flags que se reenvían al traductor: `--config`, `--ms-endpoint`, `--ms-key`, `--ms-region`, `--ms-api-version`, `--ms-category`, `--ms-text-type`, `--max-workers`, `--http-timeout`, `--http-pool-maxsize`, `--http-retries`.

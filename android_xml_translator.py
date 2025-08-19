@@ -499,14 +499,14 @@ def translate_strings_for_language(strings, source_lang, target_lang, transliter
 
     return translated_strings
 
-def process_language(input_file, source_lang, target_lang, strings, transliterate=False):
+def process_language(input_file, source_lang, target_lang, strings, transliterate=False, output_path=None):
     """Process a single target language"""
     # Translate all strings for this language
     translated_strings = translate_strings_for_language(strings, source_lang, target_lang, transliterate)
     
     # Create translated XML file
     output_file_suffix = "translit-" + target_lang if transliterate else target_lang
-    output_file = create_translated_xml(input_file, translated_strings, output_file_suffix)
+    output_file = create_translated_xml(input_file, translated_strings, output_file_suffix, output_path=output_path)
     
     # Print completion message
     if transliterate:
@@ -538,6 +538,7 @@ def main():
     parser.add_argument('target_langs', nargs='+', help='One or more target language codes (e.g., fr es de)')
     parser.add_argument('--source-lang', default=os.getenv('AZURE_TRANSLATOR_SOURCE_LANG', 'auto'), help="Source language code (default: 'auto' for autodetect)")
     parser.add_argument('--preserve', action='store_true', help='Preserve untranslated strings')
+    parser.add_argument('--in-place', action='store_true', help='Write translations back into the same input file (overwrites)')
     parser.add_argument('--transliterate', action='store_true', help='Use transliteration instead of translation')
     parser.add_argument('--max-workers', type=int, default=10, help='Maximum number of parallel translation workers (default: 10, recommended for private endpoint)')
     parser.add_argument('--http-timeout', type=float, default=float(os.getenv('AZURE_TRANSLATOR_HTTP_TIMEOUT', '30')), help='HTTP request timeout in seconds (default: 30)')
@@ -651,16 +652,19 @@ def main():
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit tasks for each target language
-        future_to_lang = {
-            executor.submit(
+        future_to_lang = {}
+        for target_lang in args.target_langs:
+            out_path = args.input_file if args.in_place else None
+            fut = executor.submit(
                 process_language,
                 args.input_file,
                 args.source_lang,
-                target_lang, 
-                strings, 
-                args.transliterate
-            ): target_lang for target_lang in args.target_langs
-        }
+                target_lang,
+                strings,
+                args.transliterate,
+                out_path,
+            )
+            future_to_lang[fut] = target_lang
         
         # Process results as they complete
         for future in concurrent.futures.as_completed(future_to_lang):
