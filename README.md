@@ -23,6 +23,7 @@ Configuración
 	- `AZURE_TRANSLATOR_API_VERSION` (opcional, por defecto `3.0`)
 	- `AZURE_TRANSLATOR_CATEGORY` (opcional, para Custom Translator)
 	- `AZURE_TRANSLATOR_TEXT_TYPE` (`plain` o `html`, por defecto `plain`)
+	- Opciones de rendimiento (opcional): `AZURE_TRANSLATOR_HTTP_TIMEOUT`, `AZURE_TRANSLATOR_HTTP_POOL_MAXSIZE`, `AZURE_TRANSLATOR_HTTP_RETRIES`.
 
 o parámetros CLI equivalentes:
 
@@ -30,23 +31,23 @@ o parámetros CLI equivalentes:
 
 Archivo de configuración (opcional)
 
-- Puedes pasar `--config config.json` con las mismas claves: `endpoint`, `key`, `region`, `api_version`, `category`, `text_type`.
+- Puedes pasar `--config config.json` con las mismas claves: `endpoint`, `key`, `region`, `api_version`, `category`, `text_type` y también `http_timeout`, `http_pool_maxsize`, `http_retries`.
 - Precedencia de valores: defaults < archivo de configuración < variables de entorno < parámetros de CLI.
 - Ejemplo: `config.example.json` incluido en el repo.
 
 Uso
 
 ```bash
-# Ejemplo básico (con variables de entorno ya exportadas)
-python3 android_xml_translator.py app/src/main/res/values/strings.xml es fr de --source-lang auto
+# Ejemplo básico (con variables de entorno ya exportadas). En modo in-place (por defecto) usa UN solo idioma destino
+python3 android_xml_translator.py app/src/main/res/values/strings.xml es --source-lang auto
 
 # Pasando la clave y región por CLI
-python3 android_xml_translator.py app/src/main/res/values/strings.xml es fr \
+python3 android_xml_translator.py app/src/main/res/values/strings.xml es \
 	--ms-key "$AZURE_TRANSLATOR_KEY" \
 	--ms-region "westeurope"
 
 # Usando archivo de configuración
-python3 android_xml_translator.py app/src/main/res/values/strings.xml es fr \
+python3 android_xml_translator.py app/src/main/res/values/strings.xml es \
 	--config config.json
 
 Rendimiento (endpoint privado)
@@ -57,12 +58,12 @@ Rendimiento (endpoint privado)
 - Retries: `--http-retries 3-5` según tolerancia a reintentos.
 
 # Transliteración (por ejemplo, de uk a latino)
-python3 android_xml_translator.py strings.xml uk en --transliterate
+python3 android_xml_translator.py strings.xml en --source-lang uk --transliterate
 ```
 
 Salida
 
-- Se generan archivos `strings-<lang>.xml` al lado del archivo original, por ejemplo: `strings-fr.xml`.
+- Por defecto se SOBRESCRIBE el archivo de entrada (`strings.xml`). No se generan archivos como `strings-<lang>.xml`.
 
 Notas
 

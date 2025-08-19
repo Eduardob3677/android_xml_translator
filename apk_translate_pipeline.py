@@ -27,6 +27,9 @@ from pathlib import Path
 from typing import Dict
 from typing import Optional, List
 
+# Importar el traductor como módulo para usar sus funciones y configuración
+import android_xml_translator as axt
+
 
 HERE = Path(__file__).resolve().parent
 TRANSLATOR_SCRIPT = HERE / "android_xml_translator.py"
@@ -118,22 +121,17 @@ def translate_from_all_locales(locale_files: Dict[str, Path], source_lang: str, 
         # Inicial: copiar la base como punto de partida
         shutil.copy2(base_file, target_file)
 
-        # Por cada locale origen, ejecutar el traductor y fusionar
+        # Por cada locale origen, traducimos en memoria y acumulamos resultados; nunca tocamos los archivos de origen
         total = len(locale_files)
+        combined_strings: Dict[str, str] = {}
         for idx, (src_locale, strings_xml) in enumerate(locale_files.items(), start=1):
-            run([
-                sys.executable,
-                str(TRANSLATOR_SCRIPT),
-                str(strings_xml),
-                target,
-                "--source-lang", source_lang,
-                "--in-place",
-                *translator_args,
-            ])
+            src_map = axt.extract_strings(str(strings_xml))
+            translated_map = axt.translate_strings_for_language(src_map, source_lang, target, transliterate=False)
+            combined_strings.update(translated_map)  # las últimas entradas sobrescriben
+            print(f"{BLUE}[{target}]{RESET} Traducido {idx}/{total} desde locale {src_locale}")
 
-            # El traductor sobreescribe el strings.xml de origen si usamos --in-place, así que debemos fusionar ese origen traducido con el target acumulado.
-            merge_android_strings(str(target_file), str(strings_xml), str(target_file))
-            print(f"{BLUE}[{target}]{RESET} Merge {idx}/{total} desde locale {src_locale}")
+        # Escribir todas las claves traducidas sobre el archivo destino (sobrescribe)
+        axt.create_translated_xml(str(target_file), combined_strings, target_lang=target, output_path=str(target_file))
 
         print(f"{GREEN}✓{RESET} {BOLD}{target}{RESET}: {target_file}")
 
@@ -212,6 +210,94 @@ def main():
     parser.add_argument("--out", help="Ruta del APK firmado de salida (default: <apk>_signed.apk)")
 
     args = parser.parse_args()
+    # Configurar Microsoft Translator en el módulo importado (axt) usando precedencia defaults < file < env < CLI
+    defaults = {
+        "endpoint": 'https://api.cognitive.microsofttranslator.com',
+        "api_version": '3.0',
+        "text_type": 'plain',
+        "key": None,
+        "region": None,
+        "category": None,
+    }
+    file_cfg = {}
+    file_http_cfg = {}
+    if args.config:
+        try:
+            import json
+            with open(args.config, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    file_cfg = {
+                        "endpoint": loaded.get("endpoint"),
+                        "key": loaded.get("key"),
+                        "region": loaded.get("region"),
+                        "api_version": loaded.get("api_version"),
+                        "category": loaded.get("category"),
+                        "text_type": loaded.get("text_type"),
+                    }
+                    file_http_cfg = {
+                        "timeout": loaded.get("http_timeout"),
+                        "pool_maxsize": loaded.get("http_pool_maxsize"),
+                        "retries": loaded.get("http_retries"),
+                    }
+        except Exception as e:
+            print(f"Warning: No se pudo leer el archivo de configuración: {e}")
+
+    env_cfg = {
+        "endpoint": os.getenv('AZURE_TRANSLATOR_ENDPOINT'),
+        "key": os.getenv('AZURE_TRANSLATOR_KEY'),
+        "region": os.getenv('AZURE_TRANSLATOR_REGION'),
+        "api_version": os.getenv('AZURE_TRANSLATOR_API_VERSION'),
+        "category": os.getenv('AZURE_TRANSLATOR_CATEGORY'),
+        "text_type": os.getenv('AZURE_TRANSLATOR_TEXT_TYPE'),
+    }
+
+    cli_cfg = {
+        "endpoint": args.ms_endpoint,
+        "key": args.ms_key,
+        "region": args.ms_region,
+        "api_version": args.ms_api_version,
+        "category": args.ms_category,
+        "text_type": args.ms_text_type,
+    }
+
+    def merge(a, b):
+        out = dict(a)
+        for k, v in b.items():
+            if v is not None and v != '':
+                out[k] = v
+        return out
+
+    merged = merge(defaults, file_cfg)
+    merged = merge(merged, env_cfg)
+    merged = merge(merged, cli_cfg)
+    axt.MS_TRANSLATOR_CONFIG.update(merged)
+
+    # HTTP config
+    def _merge_http(base, override):
+        for k, v in override.items():
+            if v is not None and v != "":
+                if k == "timeout":
+                    try: base[k] = float(v)
+                    except Exception: pass
+                elif k in ("pool_maxsize", "retries"):
+                    try: base[k] = int(v)
+                    except Exception: pass
+                else:
+                    base[k] = v
+        return base
+
+    _merge_http(axt.HTTP_CONFIG, file_http_cfg)
+    _merge_http(axt.HTTP_CONFIG, {
+        "timeout": args.http_timeout,
+        "pool_maxsize": args.http_pool_maxsize,
+        "retries": args.http_retries,
+    })
+
+    if not axt.MS_TRANSLATOR_CONFIG.get("key"):
+        print("Error: Debes proporcionar la clave de Microsoft Translator con --ms-key, AZURE_TRANSLATOR_KEY o en el config.")
+        sys.exit(1)
+
 
     apk_path = Path(args.apk).resolve()
     if not apk_path.exists():

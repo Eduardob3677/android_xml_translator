@@ -457,10 +457,8 @@ def create_translated_xml(original_file, strings_dict, target_lang, output_path=
                             pl_elem.append(it)
                     break
     
-    # Create filename for the translated file
-    base_name = os.path.basename(original_file)
-    dir_name = os.path.dirname(original_file)
-    translated_file = output_path or os.path.join(dir_name, f"strings-{target_lang}.xml")
+    # Determine output file: por requisito, sobrescribir el archivo original salvo que se provea output_path
+    translated_file = output_path or original_file
 
     # Asegurar directorio de salida
     out_dir = os.path.dirname(translated_file)
@@ -538,7 +536,7 @@ def main():
     parser.add_argument('target_langs', nargs='+', help='One or more target language codes (e.g., fr es de)')
     parser.add_argument('--source-lang', default=os.getenv('AZURE_TRANSLATOR_SOURCE_LANG', 'auto'), help="Source language code (default: 'auto' for autodetect)")
     parser.add_argument('--preserve', action='store_true', help='Preserve untranslated strings')
-    parser.add_argument('--in-place', action='store_true', help='Write translations back into the same input file (overwrites)')
+    parser.add_argument('--in-place', action='store_true', default=True, help='Write translations back into the same input file (overwrites). Default: enabled')
     parser.add_argument('--transliterate', action='store_true', help='Use transliteration instead of translation')
     parser.add_argument('--max-workers', type=int, default=10, help='Maximum number of parallel translation workers (default: 10, recommended for private endpoint)')
     parser.add_argument('--http-timeout', type=float, default=float(os.getenv('AZURE_TRANSLATOR_HTTP_TIMEOUT', '30')), help='HTTP request timeout in seconds (default: 30)')
@@ -663,6 +661,10 @@ def main():
     print(f"{YELLOW}Found{RESET} {len(strings)} translatable entries.")
     
     # Show summary of work to be done
+    if args.in_place and len(args.target_langs) > 1:
+        print(f"Error: En modo in-place solo se permite un idioma destino. Pasa un único código de idioma o desactiva in-place.")
+        return
+
     print(f"\n{BOLD}Preparing{RESET} to process {len(args.target_langs)} target languages:")
     for lang in args.target_langs:
         if args.transliterate:
