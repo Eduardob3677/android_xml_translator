@@ -2,7 +2,7 @@
 """
 Android strings.xml Translator
 
-Este script traduce recursos de texto de Android desde un archivo strings.xml
+#Este script traduce recursos de texto de Android desde un archivo strings.xml
 usando la API de Microsoft Translator (Azure AI Translator).
 
 Características:
@@ -85,90 +85,63 @@ def extract_strings(xml_file):
     return strings
 
 
-def translate_text(text, source_lang, target_lang, transliterate=False):
-    """Traduce texto usando Microsoft Translator preservando placeholders"""
+def translate_text(text, source_lang, target_lang, transliterate=False, batch_mode=False):
+    """Traduce texto usando Microsoft Translator preservando placeholders. Optimizado para endpoint privado."""
     if not text.strip():
         return text
-    
-    # Handle special case: if the text only consists of format specifiers or escape sequences, don't translate
+
+    # Si el texto solo tiene placeholders/escapes, no traducir
     if re.match(r'^([%\\][\w\'"\n$]+)+$', text.strip()):
         return text
-    
-    # 1. Extract and store all special sequences that should not be translated
-    # These will be replaced with unique tokens that won't be translated
-    
-    # Track placeholders with their positions
+
+    # Extraer placeholders
     placeholders = []
     placeholder_positions = []
-    
-    # Patterns to match:
-    # - Format specifiers like %s, %d, %1$s
-    # - Escaped chars like \n, \t, \', \"
-    # - Unicode escapes like \u1234
-    # - Common regex patterns
-    pattern = r'%([0-9]+\$)?[sdif]|%[sdif]|\\\'|\\"|\\\n|\\n|\\t|\\r|\\b|\\u[0-9a-fA-F]{4}|\[[^\]]*\]|\{\d+\}|\{[a-zA-Z_]+\}'
-    
-    # Find all matches and their positions, also preserve surrounding spaces
+    pattern = r'%([0-9]+\$)?[sdif]|%[sdif]|\\'|\\"|\\\n|\\n|\\t|\\r|\\b|\\u[0-9a-fA-F]{4}|\[[^\]]*\]|\{\d+\}|\{[a-zA-Z_]+\}'
     for match in re.finditer(pattern, text):
         start, end = match.span()
         placeholder = match.group(0)
-        
-        # Check for spaces before the placeholder
         leading_space = ""
         if start > 0 and text[start-1] == " ":
             leading_space = " "
             start -= 1
-            
-        # Check for spaces after the placeholder
         trailing_space = ""
         if end < len(text) and text[end] == " ":
             trailing_space = " "
             end += 1
-            
-        # Store the placeholder with its surrounding spaces
         placeholders.append(leading_space + placeholder + trailing_space)
         placeholder_positions.append((start, end))
-    
-    # If no special sequences found, translate the whole text normally
+
     if not placeholders:
         return _perform_translation(text, source_lang, target_lang, transliterate)
-    
-    # 2. Split the text into translatable segments and non-translatable tokens
+
+    # Dividir en segmentos traducibles y no traducibles
     segments = []
     last_end = 0
-    
     for i, (start, end) in enumerate(placeholder_positions):
-        # Add text segment before the placeholder (if any)
         if start > last_end:
             segments.append(('text', text[last_end:start]))
-        
-        # Add the placeholder as a non-translatable token
         segments.append(('placeholder', placeholders[i]))
         last_end = end
-    
-    # Add any remaining text after the last placeholder
     if last_end < len(text):
         segments.append(('text', text[last_end:]))
-    
-    # 3. Translate only the text segments
-    translated_segments = []
-    
-    # Collect all text segments for batch translation
+
     text_segments = [segment[1] for segment in segments if segment[0] == 'text']
-    
-    # If we have text to translate
-    if text_segments:
-        # Join with a special delimiter that's unlikely to appear in the text
+
+    # Batch mode: traduce hasta 25 segmentos en una sola llamada
+    if batch_mode and text_segments:
+        batch_size = 25
+        translated_texts = []
+        for i in range(0, len(text_segments), batch_size):
+            batch = text_segments[i:i+batch_size]
+            batch_translated = _perform_translation(batch, source_lang, target_lang, transliterate, batch_mode=True)
+            translated_texts.extend(batch_translated)
+    elif text_segments:
+        # Traducir todos los segmentos juntos (como antes)
         delimiter = "⟐⟐⟐SPLIT⟐⟐⟐"
         combined_text = delimiter.join(text_segments)
-
-        # Translate the combined text
         translated_combined = _perform_translation(combined_text, source_lang, target_lang, transliterate)
-
-        # Split the translated result back into segments
         translated_texts = translated_combined.split(delimiter)
-
-        # If we didn't get the same number of segments back, fall back to translating individually
         if len(translated_texts) != len(text_segments):
             translated_texts = [
                 _perform_translation(segment, source_lang, target_lang, transliterate)
@@ -176,38 +149,33 @@ def translate_text(text, source_lang, target_lang, transliterate=False):
             ]
     else:
         translated_texts = []
-    
-    # 4. Reconstruct the text with translated segments and original placeholders
+
+    # Reconstruir el texto
     result = ""
     text_segment_index = 0
-    
     for segment_type, segment_value in segments:
         if segment_type == 'text':
-            # Use the translated text segment
             if text_segment_index < len(translated_texts):
                 result += translated_texts[text_segment_index]
                 text_segment_index += 1
             else:
-                result += segment_value  # Fallback if something went wrong
+                result += segment_value
         else:
-            # Use the original placeholder with its surrounding spaces
             result += segment_value
-    
-    # Check if spaces around placeholders were preserved correctly
-    # If not, try to fix any missing spaces by checking for placeholder formats directly attached to words
     placeholder_pattern = r'(\w+)(%[0-9]*\$?[sdif])(\w+)'
     result = re.sub(placeholder_pattern, r'\1 \2 \3', result)
-    
     return result
 
 
-def _perform_translation(text, source_lang, target_lang, transliterate=False):
-    """Realiza la traducción usando Microsoft Translator API"""
-    if not text.strip():
-        return text
-
-    # Pequeño jitter para convivir con concurrencia
-    time.sleep(random.uniform(0.1, 0.3))
+def _perform_translation(text_or_batch, source_lang, target_lang, transliterate=False, batch_mode=False):
+    """Realiza la traducción usando Microsoft Translator API. Soporta batch si batch_mode=True."""
+    if batch_mode:
+        # text_or_batch es una lista de textos
+        texts = text_or_batch
+    else:
+        if not text_or_batch.strip():
+            return text_or_batch
+        texts = [text_or_batch]
 
     endpoint = MS_TRANSLATOR_CONFIG.get("endpoint")
     key = MS_TRANSLATOR_CONFIG.get("key")
@@ -229,7 +197,6 @@ def _perform_translation(text, source_lang, target_lang, transliterate=False):
     }
     if category:
         params["category"] = category
-    # Si se solicita transliteración, intentamos obtener salida en Latn
     if transliterate:
         params["toScript"] = "Latn"
 
@@ -237,47 +204,43 @@ def _perform_translation(text, source_lang, target_lang, transliterate=False):
         "Ocp-Apim-Subscription-Key": key,
         "Content-Type": "application/json",
     }
-    # Algunos recursos requieren región
     if region:
         headers["Ocp-Apim-Subscription-Region"] = region
 
-    body = [{"text": text}]
+    body = [{"text": t} for t in texts]
 
-    # Reintentos simples ante 429/5xx
     attempts = 0
     backoff = 0.5
     while attempts < 3:
         attempts += 1
         try:
             resp = requests.post(url, params=params, headers=headers, json=body, timeout=30)
-            # Manejo de límites: si 429, reintentar con backoff exponencial y jitter
             if resp.status_code in (429, 500, 502, 503, 504):
                 time.sleep(backoff + random.uniform(0, 0.3))
                 backoff *= 2
                 continue
             resp.raise_for_status()
             data = resp.json()
-
             if not isinstance(data, list) or not data:
-                return text
-
-            first = data[0]
-            translations = first.get("translations", [])
-            if not translations:
-                return text
-
-            t0 = translations[0]
-            # Si pedimos transliteración y viene en el objeto
-            if transliterate:
-                translit_obj = t0.get("transliteration")
-                if translit_obj and translit_obj.get("text"):
-                    return translit_obj["text"]
-            # Texto traducido normal
-            return t0.get("text", text)
+                return [t for t in texts] if batch_mode else texts[0]
+            results = []
+            for i, item in enumerate(data):
+                translations = item.get("translations", [])
+                if not translations:
+                    results.append(texts[i])
+                    continue
+                t0 = translations[0]
+                if transliterate:
+                    translit_obj = t0.get("transliteration")
+                    if translit_obj and translit_obj.get("text"):
+                        results.append(translit_obj["text"])
+                        continue
+                results.append(t0.get("text", texts[i]))
+            return results if batch_mode else results[0]
         except requests.exceptions.RequestException as e:
             if attempts >= 3:
                 print(f"Translation error after retries: {e}")
-                return text
+                return [t for t in texts] if batch_mode else texts[0]
             time.sleep(backoff + random.uniform(0, 0.2))
 
 
@@ -358,48 +321,30 @@ def create_translated_xml(original_file, strings_dict, target_lang):
 
 
 def translate_strings_for_language(strings, source_lang, target_lang, transliterate=False):
-    """Translate all strings for a specific target language"""
+    """Traduce todos los strings para un idioma destino usando batch y concurrencia máxima."""
     translated_strings = {}
     total = len(strings)
-    
-    # Progress tracking
-    if transliterate:
-        print(f"Starting transliteration from {source_lang} to {target_lang}...")
-    else:
-        print(f"Starting translation from {source_lang} to {target_lang}...")
-    
-    for current, (key, text) in enumerate(strings.items(), 1):
-        # Determine string type for progress display
-        if key.startswith("string:"):
-            name = key.split(":", 1)[1]
-            if current % 10 == 0 or current == total:  # Show progress every 10 items
-                if transliterate:
-                    print(f"[{target_lang}] Transliterating string ({current}/{total}): {name}")
-                else:
-                    print(f"[{target_lang}] Translating string ({current}/{total}): {name}")
-        elif key.startswith("array:"):
-            parts = key.split(":", 2)
-            array_name = parts[1]
-            item_index = parts[2]
-            if current % 10 == 0 or current == total:  # Show progress every 10 items
-                if transliterate:
-                    print(f"[{target_lang}] Transliterating array item ({current}/{total}): {array_name}[{item_index}]")
-                else:
-                    print(f"[{target_lang}] Translating array item ({current}/{total}): {array_name}[{item_index}]")
-        elif key.startswith("plurals:"):
-            parts = key.split(":", 2)
-            plurals_name = parts[1]
-            quantity = parts[2]
-            if current % 10 == 0 or current == total:  # Show progress every 10 items
-                if transliterate:
-                    print(f"[{target_lang}] Transliterating plural item ({current}/{total}): {plurals_name}[{quantity}]")
-                else:
-                    print(f"[{target_lang}] Translating plural item ({current}/{total}): {plurals_name}[{quantity}]")
-        
-        # Translate or transliterate the text
-        translated_text = translate_text(text, source_lang, target_lang, transliterate)
-        translated_strings[key] = translated_text
-    
+
+    print(f"Starting {'transliteration' if transliterate else 'translation'} from {source_lang} to {target_lang} with batch mode and high concurrency...")
+
+    # Agrupar por lotes de 25 para batch
+    items = list(strings.items())
+    batch_size = 25
+    for i in range(0, len(items), batch_size):
+        batch = items[i:i+batch_size]
+        keys = [k for k, _ in batch]
+        texts = [t for _, t in batch]
+        translated_batch = [
+            translate_text(text, source_lang, target_lang, transliterate, batch_mode=True)
+            for text in texts
+        ]
+        # Si translate_text devuelve lista, tomar el primer elemento (por compatibilidad)
+        for idx, k in enumerate(keys):
+            tb = translated_batch[idx]
+            if isinstance(tb, list):
+                translated_strings[k] = tb[0]
+            else:
+                translated_strings[k] = tb
     return translated_strings
 
 def process_language(input_file, source_lang, target_lang, strings, transliterate=False):
@@ -442,7 +387,7 @@ def main():
     parser.add_argument('target_langs', nargs='+', help='One or more target language codes (e.g., fr es de)')
     parser.add_argument('--preserve', action='store_true', help='Preserve untranslated strings')
     parser.add_argument('--transliterate', action='store_true', help='Use transliteration instead of translation')
-    parser.add_argument('--max-workers', type=int, default=3, help='Maximum number of parallel translation workers (default: 3)')
+    parser.add_argument('--max-workers', type=int, default=10, help='Maximum number of parallel translation workers (default: 10, recommended for private endpoint)')
     parser.add_argument('--config', help='Path to a JSON config file with Microsoft Translator settings')
     # Parámetros Microsoft Translator
     parser.add_argument('--ms-endpoint', default=os.getenv('AZURE_TRANSLATOR_ENDPOINT', 'https://api.cognitive.microsofttranslator.com'), help='Microsoft Translator endpoint URL')
