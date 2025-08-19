@@ -4,5 +4,8 @@
   "region": "westeurope",
   "api_version": "3.0",
   "category": null,
-  "text_type": "plain"
+  "text_type": "plain",
+  "http_timeout": 30,
+  "http_pool_maxsize": 50,
+  "http_retries": 3
 }

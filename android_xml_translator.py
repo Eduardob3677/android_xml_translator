@@ -350,7 +350,7 @@ def create_translated_xml(original_file, strings_dict, target_lang, output_path=
     # Update string-arrays
     for array_elem in root.findall("string-array"):
         array_name = array_elem.get("name")
-        
+
         # Check if this array has any translated items
         array_has_translations = False
         for i, item_elem in enumerate(array_elem.findall("item")):
@@ -358,15 +358,15 @@ def create_translated_xml(original_file, strings_dict, target_lang, output_path=
             if key in strings_dict:
                 array_has_translations = True
                 break
-        
-                if array_has_translations:
-                    arrays_updated.add(array_name)
-                    # Update the items
-                    for i, item_elem in enumerate(array_elem.findall("item")):
-                        key = f"array:{array_name}:{i}"
-                        if key in strings_dict:
-                            item_elem.text = _escape_android_string(strings_dict[key])
-                existing_arrays.add(array_name)
+
+        if array_has_translations:
+            arrays_updated.add(array_name)
+            # Update the items
+            for i, item_elem in enumerate(array_elem.findall("item")):
+                key = f"array:{array_name}:{i}"
+                if key in strings_dict:
+                    item_elem.text = _escape_android_string(strings_dict[key])
+        existing_arrays.add(array_name)
     
     # Update plurals
     for plurals_elem in root.findall("plurals"):
@@ -571,6 +571,7 @@ def main():
 
     # Cargar config desde archivo si se proporciona
     file_cfg = {}
+    file_http_cfg = {}
     if args.config:
         try:
             with open(args.config, 'r', encoding='utf-8') as f:
@@ -584,6 +585,12 @@ def main():
                         "api_version": loaded.get("api_version"),
                         "category": loaded.get("category"),
                         "text_type": loaded.get("text_type"),
+                    }
+                    # Opciones HTTP opcionales en config
+                    file_http_cfg = {
+                        "timeout": loaded.get("http_timeout"),
+                        "pool_maxsize": loaded.get("http_pool_maxsize"),
+                        "retries": loaded.get("http_retries"),
                     }
         except Exception as e:
             print(f"Warning: No se pudo leer el archivo de configuración: {e}")
@@ -621,8 +628,27 @@ def main():
     merged = merge(merged, cli_cfg)
 
     MS_TRANSLATOR_CONFIG.update(merged)
-    # Actualizar HTTP config
-    HTTP_CONFIG.update({
+    # Actualizar HTTP config con precedencia: defaults/env -> file -> CLI
+    def _merge_http(base, override):
+        for k, v in override.items():
+            if v is not None and v != "":
+                # cast básicos
+                if k in ("timeout",):
+                    try:
+                        base[k] = float(v)
+                    except Exception:
+                        pass
+                elif k in ("pool_maxsize", "retries"):
+                    try:
+                        base[k] = int(v)
+                    except Exception:
+                        pass
+                else:
+                    base[k] = v
+        return base
+
+    _merge_http(HTTP_CONFIG, file_http_cfg)
+    _merge_http(HTTP_CONFIG, {
         "timeout": args.http_timeout,
         "pool_maxsize": args.http_pool_maxsize,
         "retries": args.http_retries,
