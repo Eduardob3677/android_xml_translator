@@ -38,6 +38,16 @@ import concurrent.futures
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+# ANSI colors para salida con progreso
+RESET = "\033[0m"
+BOLD = "\033[1m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+BLUE = "\033[34m"
+CYAN = "\033[36m"
+MAGENTA = "\033[35m"
+RED = "\033[31m"
+
 # Configuración global de Microsoft Translator. Se inicializa en main()
 MS_TRANSLATOR_CONFIG = {
     "endpoint": os.getenv("AZURE_TRANSLATOR_ENDPOINT", "https://api.cognitive.microsofttranslator.com"),
@@ -468,21 +478,21 @@ def translate_strings_for_language(strings, source_lang, target_lang, transliter
     total = len(strings)
 
     if transliterate:
-        print(f"Starting transliteration from {source_lang} to {target_lang}...")
+        print(f"{BOLD}{CYAN}⟶ Transliterating{RESET} {YELLOW}{source_lang}{RESET} → {GREEN}{target_lang}{RESET} ...")
     else:
-        print(f"Starting translation from {source_lang} to {target_lang}...")
+        print(f"{BOLD}{CYAN}⟶ Translating{RESET} {YELLOW}{source_lang}{RESET} → {GREEN}{target_lang}{RESET} ...")
 
     for current, (key, text) in enumerate(strings.items(), 1):
         if key.startswith("string:"):
             name = key.split(":", 1)[1]
             if current % 25 == 0 or current == total:
-                print(f"[{target_lang}] {'Transliterating' if transliterate else 'Translating'} string ({current}/{total}): {name}")
+                print(f"{BLUE}[{target_lang}]{RESET} {'Transliterating' if transliterate else 'Translating'} string {current}/{total}: {name}")
         elif key.startswith("array:") and (current % 50 == 0 or current == total):
             parts = key.split(":", 2)
-            print(f"[{target_lang}] {'Transliterating' if transliterate else 'Translating'} array item ({current}/{total}): {parts[1]}[{parts[2]}]")
+            print(f"{BLUE}[{target_lang}]{RESET} {'Transliterating' if transliterate else 'Translating'} array {current}/{total}: {parts[1]}[{parts[2]}]")
         elif key.startswith("plurals:") and (current % 50 == 0 or current == total):
             parts = key.split(":", 2)
-            print(f"[{target_lang}] {'Transliterating' if transliterate else 'Translating'} plural item ({current}/{total}): {parts[1]}[{parts[2]}]")
+            print(f"{BLUE}[{target_lang}]{RESET} {'Transliterating' if transliterate else 'Translating'} plural {current}/{total}: {parts[1]}[{parts[2]}]")
 
         translated_text = translate_text(text, source_lang, target_lang, transliterate)
         translated_strings[key] = translated_text
@@ -500,9 +510,9 @@ def process_language(input_file, source_lang, target_lang, strings, transliterat
     
     # Print completion message
     if transliterate:
-        print(f"✓ Transliteration to {target_lang} completed! File saved as: {output_file}")
+        print(f"{GREEN}✓{RESET} Transliteration to {BOLD}{target_lang}{RESET} completed. File: {target_lang} → {output_file}")
     else:
-        print(f"✓ Translation to {target_lang} completed! File saved as: {output_file}")
+        print(f"{GREEN}✓{RESET} Translation to {BOLD}{target_lang}{RESET} completed. File: {output_file}")
     
     # Return statistics
     string_count = len([k for k in strings.keys() if k.startswith("string:")])
@@ -525,8 +535,8 @@ def process_language(input_file, source_lang, target_lang, strings, transliterat
 def main():
     parser = argparse.ArgumentParser(description='Translate Android strings.xml to multiple languages')
     parser.add_argument('input_file', help='Path to the original strings.xml file')
-    parser.add_argument('source_lang', help='Source language code (e.g., en)')
     parser.add_argument('target_langs', nargs='+', help='One or more target language codes (e.g., fr es de)')
+    parser.add_argument('--source-lang', default=os.getenv('AZURE_TRANSLATOR_SOURCE_LANG', 'auto'), help="Source language code (default: 'auto' for autodetect)")
     parser.add_argument('--preserve', action='store_true', help='Preserve untranslated strings')
     parser.add_argument('--transliterate', action='store_true', help='Use transliteration instead of translation')
     parser.add_argument('--max-workers', type=int, default=10, help='Maximum number of parallel translation workers (default: 10, recommended for private endpoint)')
@@ -621,12 +631,12 @@ def main():
         print("Error: Debes proporcionar la clave de Microsoft Translator con --ms-key o AZURE_TRANSLATOR_KEY.")
         return
 
-    print(f"Extracting strings from {args.input_file}...")
+    print(f"{BOLD}Extracting strings from{RESET} {args.input_file} …")
     strings = extract_strings(args.input_file)
-    print(f"Found {len(strings)} translatable strings to process.")
+    print(f"{YELLOW}Found{RESET} {len(strings)} translatable entries.")
     
     # Show summary of work to be done
-    print(f"\nPreparing to process {len(args.target_langs)} target languages:")
+    print(f"\n{BOLD}Preparing{RESET} to process {len(args.target_langs)} target languages:")
     for lang in args.target_langs:
         if args.transliterate:
             print(f"- Transliterating from {args.source_lang} to {lang}")
@@ -643,9 +653,9 @@ def main():
         # Submit tasks for each target language
         future_to_lang = {
             executor.submit(
-                process_language, 
-                args.input_file, 
-                args.source_lang, 
+                process_language,
+                args.input_file,
+                args.source_lang,
                 target_lang, 
                 strings, 
                 args.transliterate
@@ -662,7 +672,7 @@ def main():
                 print(f"Error processing {target_lang}: {e}")
     
     # Print final summary
-    print("\n=== Translation Summary ===")
+    print(f"\n{BOLD}=== Translation Summary ==={RESET}")
     for result in sorted(results, key=lambda x: x["target_lang"]):
         lang = result["target_lang"]
         print(f"\n{lang.upper()} ({result['output_file']}):")

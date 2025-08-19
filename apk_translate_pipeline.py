@@ -30,6 +30,7 @@ from typing import Optional, List
 
 HERE = Path(__file__).resolve().parent
 TRANSLATOR_SCRIPT = HERE / "android_xml_translator.py"
+RESET = "\033[0m"; BOLD = "\033[1m"; GREEN = "\033[32m"; CYAN = "\033[36m"; YELLOW = "\033[33m"; BLUE = "\033[34m"; RED = "\033[31m"
 
 
 def which(cmd: str):
@@ -109,7 +110,7 @@ def translate_from_all_locales(locale_files: Dict[str, Path], source_lang: str, 
     res_dir = base_file.parent.parent
 
     for target in target_langs:
-        print(f"==> Preparando traducción combinada hacia {target} desde {len(locale_files)} locales...")
+        print(f"{BOLD}{CYAN}==>{RESET} Preparando traducción combinada hacia {YELLOW}{target}{RESET} desde {len(locale_files)} locales…")
         target_dir = res_dir / lang_to_values_dir(target)
         target_dir.mkdir(parents=True, exist_ok=True)
         target_file = target_dir / "strings.xml"
@@ -117,28 +118,29 @@ def translate_from_all_locales(locale_files: Dict[str, Path], source_lang: str, 
         # Inicial: copiar la base como punto de partida
         shutil.copy2(base_file, target_file)
 
-        # Por cada locale origen, ejecutar el traductor apuntando output a target_file
-        for src_locale, strings_xml in locale_files.items():
-            # Permitir autodetección si se desea: si source_lang == 'auto' estará soportado por el traductor
+        # Por cada locale origen, ejecutar el traductor y fusionar
+        total = len(locale_files)
+        for idx, (src_locale, strings_xml) in enumerate(locale_files.items(), start=1):
             run([
                 sys.executable,
                 str(TRANSLATOR_SCRIPT),
                 str(strings_xml),
-                source_lang,
                 target,
+                "--source-lang", source_lang,
                 *translator_args,
-                # No hay flag nativa para output en el traductor; se hará en segunda fase usando la API del módulo si se expone.
             ])
 
-            # Mover/merge: el traductor genera strings-<target>.xml junto al origen; fusionar en el target_file
             generated = strings_xml.with_name(f"strings-{target}.xml")
             if not generated.exists():
                 raise RuntimeError(f"No se generó el archivo esperado: {generated}")
 
-            # Fusionar contenidos: cargar ambos y sobreescribir/añadir claves del generado en el target_file
             merge_android_strings(str(target_file), str(generated), str(target_file))
-            generated.unlink(missing_ok=True)
-        print(f"✓ {target}: {target_file}")
+            try:
+                generated.unlink()
+            except FileNotFoundError:
+                pass
+            print(f"{BLUE}[{target}]{RESET} Merge {idx}/{total} desde locale {src_locale}")
+        print(f"{GREEN}✓{RESET} {BOLD}{target}{RESET}: {target_file}")
 
 def merge_android_strings(base_xml_path: str, add_xml_path: str, out_xml_path: str):
     """Fusiona strings/arrays/plurals de add_xml sobre base_xml (sobreescribe claves existentes y añade faltantes)."""
@@ -182,8 +184,8 @@ def merge_android_strings(base_xml_path: str, add_xml_path: str, out_xml_path: s
 def main():
     parser = argparse.ArgumentParser(description="Decompila, traduce y firma APK usando Microsoft Translator")
     parser.add_argument("apk", help="Ruta al APK de entrada")
-    parser.add_argument("source_lang", help="Código de idioma origen (p.ej., en)")
     parser.add_argument("target_langs", nargs="+", help="Idiomas destino (p.ej., es fr pt-BR)")
+    parser.add_argument("--source-lang", default=os.getenv('AZURE_TRANSLATOR_SOURCE_LANG', 'auto'), help="Idioma origen (default: auto)")
 
     # Herramientas
     parser.add_argument("--apktool-path", help="Ruta a apktool si no está en PATH")
