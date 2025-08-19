@@ -93,6 +93,15 @@ Qué hace:
 - Recompila
 - Zipalign (si disponible) y firma (si se provee keystore)
 
+Soporta múltiples locales de origen:
+
+- Si el APK contiene varias carpetas `res/values*` (p. ej., `values-es`, `values-pt-rBR`), el pipeline traducirá y fusionará los `strings.xml` de todas esas locales hacia cada idioma destino.
+- Recomendado usar autodetección del idioma de origen pasando `auto` como `source_lang` cuando existan varias locales:
+
+```bash
+python3 apk_translate_pipeline.py app.apk auto es fr
+```
+
 Flags que se reenvían al traductor: `--config`, `--ms-endpoint`, `--ms-key`, `--ms-region`, `--ms-api-version`, `--ms-category`, `--ms-text-type`, `--max-workers`, `--http-timeout`, `--http-pool-maxsize`, `--http-retries`.
 
 Salida por defecto firmada: `<nombre>_signed.apk`. Si no se firma, quedará un APK sin firmar/alineado en el directorio de trabajo.

@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Dict
 from typing import Optional, List
 
 
@@ -75,46 +76,107 @@ def run(cmd, cwd=None, env=None, check=True):
     return proc
 
 
-def find_base_strings_xml(decompiled_dir: Path) -> Path:
+def find_all_locale_strings(decompiled_dir: Path) -> Dict[str, Path]:
+    """Encuentra strings.xml en todas las carpetas res/values* y devuelve mapa locale->ruta.
+    Locale "base" usará la clave "base".
+    """
     res_dir = decompiled_dir / "res"
-    # Preferido: res/values/strings.xml
-    candidate = res_dir / "values" / "strings.xml"
-    if candidate.exists():
-        return candidate
-    # Fallback: primera coincidencia en cualquier values*/strings.xml
-    for p in sorted(res_dir.glob("values*/strings.xml")):
-        return p
-    raise FileNotFoundError("No se encontró res/values/strings.xml en el APK decompilado.")
+    if not res_dir.exists():
+        raise FileNotFoundError("No existe directorio res/ en el APK decompilado.")
+    result: Dict[str, Path] = {}
+    for values_dir in sorted(res_dir.glob("values*")):
+        sxml = values_dir / "strings.xml"
+        if not sxml.exists():
+            continue
+        if values_dir.name == "values":
+            result["base"] = sxml
+        else:
+            # values-es, values-pt-rBR, etc.
+            locale = values_dir.name[len("values-"):]
+            result[locale] = sxml
+    if not result:
+        raise FileNotFoundError("No se encontró ningún strings.xml en res/values*/")
+    return result
 
 
-def translate_into_dirs(strings_xml: Path, source_lang: str, target_langs: List[str], translator_args: List[str]):
-    """Ejecuta el traductor por cada idioma y mueve salida a values-*/strings.xml"""
-    for lang in target_langs:
-        print(f"==> Traduciendo a {lang}...")
-        # Llamar al script traductor
-        run([
-            sys.executable,
-            str(TRANSLATOR_SCRIPT),
-            str(strings_xml),
-            source_lang,
-            lang,
-            *translator_args,
-        ])
+def translate_from_all_locales(locale_files: Dict[str, Path], source_lang: str, target_langs: List[str], translator_args: List[str]):
+    """Para cada locale existente (incluida base), traduce sus strings hacia cada target y fusiona en el destino.
+    Escribe directamente en res/values-<target>/strings.xml usando la capacidad de output del traductor.
+    """
+    # Elegir un archivo base para el esquema (siempre existe alguno en el mapa)
+    base_locale = "base" if "base" in locale_files else sorted(locale_files.keys())[0]
+    base_file = locale_files[base_locale]
+    res_dir = base_file.parent.parent
 
-        # El traductor genera strings-<lang>.xml junto al archivo original
-        generated = strings_xml.with_name(f"strings-{lang}.xml")
-        if not generated.exists():
-            raise RuntimeError(f"No se generó el archivo esperado: {generated}")
-
-        # Mover a res/values-<lang>/strings.xml
-        values_dir_name = lang_to_values_dir(lang)
-        target_dir = strings_xml.parent.parent / values_dir_name
+    for target in target_langs:
+        print(f"==> Preparando traducción combinada hacia {target} desde {len(locale_files)} locales...")
+        target_dir = res_dir / lang_to_values_dir(target)
         target_dir.mkdir(parents=True, exist_ok=True)
         target_file = target_dir / "strings.xml"
 
-        # Sobrescribir si existe
-        shutil.move(str(generated), str(target_file))
-        print(f"✓ {lang}: {target_file}")
+        # Inicial: copiar la base como punto de partida
+        shutil.copy2(base_file, target_file)
+
+        # Por cada locale origen, ejecutar el traductor apuntando output a target_file
+        for src_locale, strings_xml in locale_files.items():
+            # Permitir autodetección si se desea: si source_lang == 'auto' estará soportado por el traductor
+            run([
+                sys.executable,
+                str(TRANSLATOR_SCRIPT),
+                str(strings_xml),
+                source_lang,
+                target,
+                *translator_args,
+                # No hay flag nativa para output en el traductor; se hará en segunda fase usando la API del módulo si se expone.
+            ])
+
+            # Mover/merge: el traductor genera strings-<target>.xml junto al origen; fusionar en el target_file
+            generated = strings_xml.with_name(f"strings-{target}.xml")
+            if not generated.exists():
+                raise RuntimeError(f"No se generó el archivo esperado: {generated}")
+
+            # Fusionar contenidos: cargar ambos y sobreescribir/añadir claves del generado en el target_file
+            merge_android_strings(str(target_file), str(generated), str(target_file))
+            generated.unlink(missing_ok=True)
+        print(f"✓ {target}: {target_file}")
+
+def merge_android_strings(base_xml_path: str, add_xml_path: str, out_xml_path: str):
+    """Fusiona strings/arrays/plurals de add_xml sobre base_xml (sobreescribe claves existentes y añade faltantes)."""
+    import xml.etree.ElementTree as ET
+    base_tree = ET.parse(base_xml_path)
+    base_root = base_tree.getroot()
+    add_tree = ET.parse(add_xml_path)
+    add_root = add_tree.getroot()
+
+    # Mapas de acceso rápido
+    strings_map = {e.get('name'): e for e in base_root.findall('string')}
+    arrays_map = {e.get('name'): e for e in base_root.findall('string-array')}
+    plurals_map = {e.get('name'): e for e in base_root.findall('plurals')}
+
+    # Strings
+    for e in add_root.findall('string'):
+        name = e.get('name')
+        if name in strings_map:
+            strings_map[name].text = e.text
+        else:
+            base_root.append(e)
+
+    # Arrays
+    for e in add_root.findall('string-array'):
+        name = e.get('name')
+        if name in arrays_map:
+            # reemplazar completo
+            base_root.remove(arrays_map[name])
+        base_root.append(e)
+
+    # Plurals
+    for e in add_root.findall('plurals'):
+        name = e.get('name')
+        if name in plurals_map:
+            base_root.remove(plurals_map[name])
+        base_root.append(e)
+
+    base_tree.write(out_xml_path, encoding='utf-8', xml_declaration=True)
 
 
 def main():
@@ -190,8 +252,8 @@ def main():
     run([apktool, "d", str(apk_path), "-o", str(decompiled_dir), "-f"])  # -f para forzar overwrite
 
     # 2) Traducir res/values/strings.xml
-    base_strings = find_base_strings_xml(decompiled_dir)
-    print(f"Archivo base: {base_strings}")
+    locale_files = find_all_locale_strings(decompiled_dir)
+    print(f"Locales encontradas: {', '.join(sorted(locale_files.keys()))}")
 
     # Construir args a reenviar al traductor
     forward_args = []
@@ -211,7 +273,7 @@ def main():
         if opt[1]:
             forward_args.extend([opt[0], opt[1]])
 
-    translate_into_dirs(base_strings, args.source_lang, args.target_langs, forward_args)
+    translate_from_all_locales(locale_files, args.source_lang, args.target_langs, forward_args)
 
     # 3) Recompilar
     unsigned_apk = workdir / "unsigned.apk"

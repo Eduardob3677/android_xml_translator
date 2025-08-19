@@ -246,10 +246,12 @@ def _perform_translation(text_or_batch, source_lang, target_lang, transliterate=
 
     params = {
         "api-version": api_version,
-        "from": source_lang,
         "to": target_lang,
         "textType": text_type,
     }
+    # Permitir auto-detección si source_lang == 'auto'
+    if source_lang and str(source_lang).lower() != 'auto':
+        params["from"] = source_lang
     if category:
         params["category"] = category
     if transliterate:
@@ -308,8 +310,11 @@ def _fallback_translate(text, source_lang, target_lang, transliterate=False):
     return text
 
 
-def create_translated_xml(original_file, strings_dict, target_lang):
-    """Create a new XML file with translated strings"""
+def create_translated_xml(original_file, strings_dict, target_lang, output_path=None):
+    """Create a new XML file with translated strings.
+    - Si faltan claves en el XML base, se crearán nuevos elementos.
+    - Si output_path se proporciona, se escribe ahí (en lugar de strings-<target>.xml).
+    """
     tree = ET.parse(original_file)
     root = tree.getroot()
     
@@ -319,13 +324,18 @@ def create_translated_xml(original_file, strings_dict, target_lang):
     # Track plurals to update
     plurals_updated = set()
     
+    # Índices existentes para detección de faltantes
+    existing_strings = set()
+    existing_arrays = set()
+    existing_plurals = set()
+
     # Update regular strings
     for string_elem in root.findall("string"):
         name = string_elem.get("name")
         key = f"string:{name}"
-        
         if key in strings_dict:
             string_elem.text = _escape_android_string(strings_dict[key])
+        existing_strings.add(name)
     
     # Update string-arrays
     for array_elem in root.findall("string-array"):
@@ -338,14 +348,15 @@ def create_translated_xml(original_file, strings_dict, target_lang):
             if key in strings_dict:
                 array_has_translations = True
                 break
-                
-        if array_has_translations:
-            arrays_updated.add(array_name)
-            # Update the items
-            for i, item_elem in enumerate(array_elem.findall("item")):
-                key = f"array:{array_name}:{i}"
-                if key in strings_dict:
-                    item_elem.text = _escape_android_string(strings_dict[key])
+        
+                if array_has_translations:
+                    arrays_updated.add(array_name)
+                    # Update the items
+                    for i, item_elem in enumerate(array_elem.findall("item")):
+                        key = f"array:{array_name}:{i}"
+                        if key in strings_dict:
+                            item_elem.text = _escape_android_string(strings_dict[key])
+                existing_arrays.add(array_name)
     
     # Update plurals
     for plurals_elem in root.findall("plurals"):
@@ -368,12 +379,84 @@ def create_translated_xml(original_file, strings_dict, target_lang):
                 key = f"plurals:{plurals_name}:{quantity}"
                 if key in strings_dict:
                     item_elem.text = _escape_android_string(strings_dict[key])
+        existing_plurals.add(plurals_name)
+
+    # Agregar elementos faltantes (strings nuevos)
+    for k, v in strings_dict.items():
+        if k.startswith("string:"):
+            _, name = k.split(":", 1)
+            if name not in existing_strings:
+                new_elem = ET.Element("string", {"name": name})
+                new_elem.text = _escape_android_string(v)
+                root.append(new_elem)
+
+    # Agregar arrays/plurals faltantes
+    # Recolectar por nombre
+    arrays_buffer = {}
+    plurals_buffer = {}
+    for k, v in strings_dict.items():
+        if k.startswith("array:"):
+            _, rest = k.split(":", 1)
+            arr_name, idx = rest.split(":", 1)
+            arrays_buffer.setdefault(arr_name, {})[int(idx)] = v
+        elif k.startswith("plurals:"):
+            _, rest = k.split(":", 1)
+            pl_name, quantity = rest.split(":", 1)
+            plurals_buffer.setdefault(pl_name, {})[quantity] = v
+
+    # Crear arrays faltantes
+    for arr_name, items in arrays_buffer.items():
+        if arr_name not in existing_arrays:
+            arr_elem = ET.Element("string-array", {"name": arr_name})
+            for i in sorted(items.keys()):
+                it = ET.Element("item")
+                it.text = _escape_android_string(items[i])
+                arr_elem.append(it)
+            root.append(arr_elem)
+        else:
+            # Si el array existe, agregar items faltantes al final
+            for array_elem in root.findall("string-array"):
+                if array_elem.get("name") == arr_name:
+                    existing_count = len(array_elem.findall("item"))
+                    max_idx = max(items.keys()) if items else -1
+                    # Añadir desde existing_count hasta max_idx si faltan
+                    for i in range(existing_count, max_idx + 1):
+                        if i in items:
+                            it = ET.Element("item")
+                            it.text = _escape_android_string(items[i])
+                            array_elem.append(it)
+                    break
+
+    # Crear plurals faltantes
+    for pl_name, qty_map in plurals_buffer.items():
+        if pl_name not in existing_plurals:
+            pl_elem = ET.Element("plurals", {"name": pl_name})
+            for qty, txt in qty_map.items():
+                it = ET.Element("item", {"quantity": qty})
+                it.text = _escape_android_string(txt)
+                pl_elem.append(it)
+            root.append(pl_elem)
+        else:
+            for pl_elem in root.findall("plurals"):
+                if pl_elem.get("name") == pl_name:
+                    existing_qty = {it.get("quantity") for it in pl_elem.findall("item")}
+                    for qty, txt in qty_map.items():
+                        if qty not in existing_qty:
+                            it = ET.Element("item", {"quantity": qty})
+                            it.text = _escape_android_string(txt)
+                            pl_elem.append(it)
+                    break
     
     # Create filename for the translated file
     base_name = os.path.basename(original_file)
     dir_name = os.path.dirname(original_file)
-    translated_file = os.path.join(dir_name, f"strings-{target_lang}.xml")
-    
+    translated_file = output_path or os.path.join(dir_name, f"strings-{target_lang}.xml")
+
+    # Asegurar directorio de salida
+    out_dir = os.path.dirname(translated_file)
+    if out_dir and not os.path.exists(out_dir):
+        os.makedirs(out_dir, exist_ok=True)
+
     # Write the translated XML
     tree.write(translated_file, encoding='utf-8', xml_declaration=True)
     return translated_file
