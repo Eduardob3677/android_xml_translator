@@ -116,6 +116,24 @@ def extract_strings(xml_file):
     return strings
 
 
+def _escape_android_string(text: str) -> str:
+    """Escapa caracteres problemáticos para resources de Android.
+    - Apostrofes y comillas sin escape: \' y \"
+    - Si empieza con @ o ? (referencias), anteponer \
+    No duplica escapes existentes.
+    """
+    if text is None:
+        return text
+    # Normalizar salto de línea
+    s = text.replace("\r\n", "\n")
+    # Escapar apostrofes y comillas no escapadas
+    s = re.sub(r"(?<!\\)'", r"\\'", s)
+    s = re.sub(r'(?<!\\)"', r'\\"', s)
+    # Escapar referencia si el primer no-espacio es @ o ?
+    leading_ws_len = len(s) - len(s.lstrip())
+    if s[leading_ws_len:leading_ws_len+1] in ('@', '?'):
+        s = s[:leading_ws_len] + '\\' + s[leading_ws_len:]
+    return s
 def sanitize_for_android_xml(text: str) -> str:
     """Escapa comillas simples y dobles no escapadas para recursos Android.
     - Convierte comillas tipográficas a ASCII y las escapa si es necesario.
@@ -307,7 +325,7 @@ def create_translated_xml(original_file, strings_dict, target_lang):
         key = f"string:{name}"
         
         if key in strings_dict:
-            string_elem.text = strings_dict[key]
+            string_elem.text = _escape_android_string(strings_dict[key])
     
     # Update string-arrays
     for array_elem in root.findall("string-array"):
@@ -327,7 +345,7 @@ def create_translated_xml(original_file, strings_dict, target_lang):
             for i, item_elem in enumerate(array_elem.findall("item")):
                 key = f"array:{array_name}:{i}"
                 if key in strings_dict:
-                    item_elem.text = strings_dict[key]
+                    item_elem.text = _escape_android_string(strings_dict[key])
     
     # Update plurals
     for plurals_elem in root.findall("plurals"):
@@ -349,7 +367,7 @@ def create_translated_xml(original_file, strings_dict, target_lang):
                 quantity = item_elem.get("quantity")
                 key = f"plurals:{plurals_name}:{quantity}"
                 if key in strings_dict:
-                    item_elem.text = strings_dict[key]
+                    item_elem.text = _escape_android_string(strings_dict[key])
     
     # Create filename for the translated file
     base_name = os.path.basename(original_file)

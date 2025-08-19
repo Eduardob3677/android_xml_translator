@@ -68,3 +68,31 @@ Notas
 
 - Para transliteración, el script usa `toScript=Latn` de Microsoft Translator cuando está disponible.
 - El script realiza reintentos ante errores 429/5xx con backoff.
+
+## Pipeline APK: decompilar → traducir → recompilar → firmar
+
+Incluye `apk_translate_pipeline.py` para automatizar el flujo completo:
+
+Requisitos:
+
+- apktool en PATH (o usa `--apktool-path`)
+- apksigner o jarsigner para firmar (opcional). zipalign recomendado si está disponible.
+
+Ejemplo:
+
+```bash
+python3 apk_translate_pipeline.py app.apk en es fr pt-BR \
+	--config config.example.json \
+	--keystore my.keystore --ks-alias myalias --ks-pass secret
+```
+
+Qué hace:
+
+- Decompila el APK
+- Traduce `res/values/strings.xml` y coloca resultados en `res/values-<lang>/strings.xml` (o `values-<lang>-r<REGION>`)
+- Recompila
+- Zipalign (si disponible) y firma (si se provee keystore)
+
+Flags que se reenvían al traductor: `--config`, `--ms-endpoint`, `--ms-key`, `--ms-region`, `--ms-api-version`, `--ms-category`, `--ms-text-type`, `--max-workers`, `--http-timeout`, `--http-pool-maxsize`, `--http-retries`.
+
+Salida por defecto firmada: `<nombre>_signed.apk`. Si no se firma, quedará un APK sin firmar/alineado en el directorio de trabajo.
