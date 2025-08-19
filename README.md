@@ -49,6 +49,13 @@ python3 android_xml_translator.py app/src/main/res/values/strings.xml en fr es \
 python3 android_xml_translator.py app/src/main/res/values/strings.xml en fr es \
 	--config config.json
 
+Rendimiento (endpoint privado)
+
+- Ajusta concurrencia: `--max-workers 10` (sube/baja según tu cuota).
+- Pool de conexiones: `--http-pool-maxsize 100` puede ayudar con muchas llamadas en paralelo.
+- Timeout: `--http-timeout 20` para reducir espera si hay colas.
+- Retries: `--http-retries 3-5` según tolerancia a reintentos.
+
 # Transliteración (por ejemplo, de uk a latino)
 python3 android_xml_translator.py strings.xml uk en --transliterate
 ```

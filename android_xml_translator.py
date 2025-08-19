@@ -35,6 +35,8 @@ import xml.etree.ElementTree as ET
 from urllib.parse import quote
 import threading
 import concurrent.futures
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Configuración global de Microsoft Translator. Se inicializa en main()
 MS_TRANSLATOR_CONFIG = {
@@ -45,6 +47,35 @@ MS_TRANSLATOR_CONFIG = {
     "category": os.getenv("AZURE_TRANSLATOR_CATEGORY"),
     "text_type": "plain",
 }
+
+# Config HTTP global (se establece en main)
+HTTP_CONFIG = {
+    "timeout": float(os.getenv("AZURE_TRANSLATOR_HTTP_TIMEOUT", "30")),
+    "pool_maxsize": int(os.getenv("AZURE_TRANSLATOR_HTTP_POOL_MAXSIZE", "50")),
+    "retries": int(os.getenv("AZURE_TRANSLATOR_HTTP_RETRIES", "3")),
+}
+
+# Sesión por hilo con pool de conexiones
+_thread_local = threading.local()
+
+def _get_session():
+    sess = getattr(_thread_local, "session", None)
+    if sess is None:
+        sess = requests.Session()
+        retry = Retry(
+            total=HTTP_CONFIG.get("retries", 3),
+            backoff_factor=0.2,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["POST", "GET"],
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(pool_connections=HTTP_CONFIG.get("pool_maxsize", 50),
+                              pool_maxsize=HTTP_CONFIG.get("pool_maxsize", 50),
+                              max_retries=retry)
+        sess.mount('https://', adapter)
+        sess.mount('http://', adapter)
+        _thread_local.session = sess
+    return sess
 
 def extract_strings(xml_file):
     """Extract strings from an Android strings.xml file"""
@@ -85,7 +116,7 @@ def extract_strings(xml_file):
     return strings
 
 
-def translate_text(text, source_lang, target_lang, transliterate=False, batch_mode=False):
+def translate_text(text, source_lang, target_lang, transliterate=False):
     """Traduce texto usando Microsoft Translator preservando placeholders. Optimizado para endpoint privado."""
     if not text.strip():
         return text
@@ -97,7 +128,7 @@ def translate_text(text, source_lang, target_lang, transliterate=False, batch_mo
     # Extraer placeholders
     placeholders = []
     placeholder_positions = []
-    pattern = r'%([0-9]+\$)?[sdif]|%[sdif]|\\'|\\"|\\\n|\\n|\\t|\\r|\\b|\\u[0-9a-fA-F]{4}|\[[^\]]*\]|\{\d+\}|\{[a-zA-Z_]+\}'
+    pattern = '%([0-9]+\\$)?[sdif]|%[sdif]|\\\\\'|\\\\\"|\\\\\\n|\\\\n|\\\\t|\\\\r|\\\\b|\\\\u[0-9a-fA-F]{4}|\\[[^\\]]*\\]|\\{\\d+\\}|\\{[a-zA-Z_]+\\}'
     for match in re.finditer(pattern, text):
         start, end = match.span()
         placeholder = match.group(0)
@@ -128,16 +159,7 @@ def translate_text(text, source_lang, target_lang, transliterate=False, batch_mo
 
     text_segments = [segment[1] for segment in segments if segment[0] == 'text']
 
-    # Batch mode: traduce hasta 25 segmentos en una sola llamada
-    if batch_mode and text_segments:
-        batch_size = 25
-        translated_texts = []
-        for i in range(0, len(text_segments), batch_size):
-            batch = text_segments[i:i+batch_size]
-            batch_translated = _perform_translation(batch, source_lang, target_lang, transliterate, batch_mode=True)
-            translated_texts.extend(batch_translated)
-    elif text_segments:
-        # Traducir todos los segmentos juntos (como antes)
+    if text_segments:
         delimiter = "⟐⟐⟐SPLIT⟐⟐⟐"
         combined_text = delimiter.join(text_segments)
         translated_combined = _perform_translation(combined_text, source_lang, target_lang, transliterate)
@@ -168,9 +190,8 @@ def translate_text(text, source_lang, target_lang, transliterate=False, batch_mo
 
 
 def _perform_translation(text_or_batch, source_lang, target_lang, transliterate=False, batch_mode=False):
-    """Realiza la traducción usando Microsoft Translator API. Soporta batch si batch_mode=True."""
+    """Realiza la traducción usando Microsoft Translator API. Soporta batch de múltiples segmentos de UN texto."""
     if batch_mode:
-        # text_or_batch es una lista de textos
         texts = text_or_batch
     else:
         if not text_or_batch.strip():
@@ -202,7 +223,9 @@ def _perform_translation(text_or_batch, source_lang, target_lang, transliterate=
 
     headers = {
         "Ocp-Apim-Subscription-Key": key,
-        "Content-Type": "application/json",
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+    "Connection": "keep-alive",
     }
     if region:
         headers["Ocp-Apim-Subscription-Region"] = region
@@ -210,11 +233,13 @@ def _perform_translation(text_or_batch, source_lang, target_lang, transliterate=
     body = [{"text": t} for t in texts]
 
     attempts = 0
-    backoff = 0.5
-    while attempts < 3:
+    max_attempts = max(1, HTTP_CONFIG.get("retries", 3))
+    backoff = 0.2
+    session = _get_session()
+    while attempts < max_attempts:
         attempts += 1
         try:
-            resp = requests.post(url, params=params, headers=headers, json=body, timeout=30)
+            resp = session.post(url, params=params, headers=headers, json=body, timeout=HTTP_CONFIG.get("timeout", 30))
             if resp.status_code in (429, 500, 502, 503, 504):
                 time.sleep(backoff + random.uniform(0, 0.3))
                 backoff *= 2
@@ -321,30 +346,30 @@ def create_translated_xml(original_file, strings_dict, target_lang):
 
 
 def translate_strings_for_language(strings, source_lang, target_lang, transliterate=False):
-    """Traduce todos los strings para un idioma destino usando batch y concurrencia máxima."""
+    """Traduce todos los strings para un idioma destino (placeholder-safe)."""
     translated_strings = {}
     total = len(strings)
 
-    print(f"Starting {'transliteration' if transliterate else 'translation'} from {source_lang} to {target_lang} with batch mode and high concurrency...")
+    if transliterate:
+        print(f"Starting transliteration from {source_lang} to {target_lang}...")
+    else:
+        print(f"Starting translation from {source_lang} to {target_lang}...")
 
-    # Agrupar por lotes de 25 para batch
-    items = list(strings.items())
-    batch_size = 25
-    for i in range(0, len(items), batch_size):
-        batch = items[i:i+batch_size]
-        keys = [k for k, _ in batch]
-        texts = [t for _, t in batch]
-        translated_batch = [
-            translate_text(text, source_lang, target_lang, transliterate, batch_mode=True)
-            for text in texts
-        ]
-        # Si translate_text devuelve lista, tomar el primer elemento (por compatibilidad)
-        for idx, k in enumerate(keys):
-            tb = translated_batch[idx]
-            if isinstance(tb, list):
-                translated_strings[k] = tb[0]
-            else:
-                translated_strings[k] = tb
+    for current, (key, text) in enumerate(strings.items(), 1):
+        if key.startswith("string:"):
+            name = key.split(":", 1)[1]
+            if current % 25 == 0 or current == total:
+                print(f"[{target_lang}] {'Transliterating' if transliterate else 'Translating'} string ({current}/{total}): {name}")
+        elif key.startswith("array:") and (current % 50 == 0 or current == total):
+            parts = key.split(":", 2)
+            print(f"[{target_lang}] {'Transliterating' if transliterate else 'Translating'} array item ({current}/{total}): {parts[1]}[{parts[2]}]")
+        elif key.startswith("plurals:") and (current % 50 == 0 or current == total):
+            parts = key.split(":", 2)
+            print(f"[{target_lang}] {'Transliterating' if transliterate else 'Translating'} plural item ({current}/{total}): {parts[1]}[{parts[2]}]")
+
+        translated_text = translate_text(text, source_lang, target_lang, transliterate)
+        translated_strings[key] = translated_text
+
     return translated_strings
 
 def process_language(input_file, source_lang, target_lang, strings, transliterate=False):
@@ -388,6 +413,9 @@ def main():
     parser.add_argument('--preserve', action='store_true', help='Preserve untranslated strings')
     parser.add_argument('--transliterate', action='store_true', help='Use transliteration instead of translation')
     parser.add_argument('--max-workers', type=int, default=10, help='Maximum number of parallel translation workers (default: 10, recommended for private endpoint)')
+    parser.add_argument('--http-timeout', type=float, default=float(os.getenv('AZURE_TRANSLATOR_HTTP_TIMEOUT', '30')), help='HTTP request timeout in seconds (default: 30)')
+    parser.add_argument('--http-pool-maxsize', type=int, default=int(os.getenv('AZURE_TRANSLATOR_HTTP_POOL_MAXSIZE', '50')), help='Max HTTP connection pool size per process (default: 50)')
+    parser.add_argument('--http-retries', type=int, default=int(os.getenv('AZURE_TRANSLATOR_HTTP_RETRIES', '3')), help='Max retry attempts for failed HTTP requests (default: 3)')
     parser.add_argument('--config', help='Path to a JSON config file with Microsoft Translator settings')
     # Parámetros Microsoft Translator
     parser.add_argument('--ms-endpoint', default=os.getenv('AZURE_TRANSLATOR_ENDPOINT', 'https://api.cognitive.microsofttranslator.com'), help='Microsoft Translator endpoint URL')
@@ -465,6 +493,12 @@ def main():
     merged = merge(merged, cli_cfg)
 
     MS_TRANSLATOR_CONFIG.update(merged)
+    # Actualizar HTTP config
+    HTTP_CONFIG.update({
+        "timeout": args.http_timeout,
+        "pool_maxsize": args.http_pool_maxsize,
+        "retries": args.http_retries,
+    })
 
     if not MS_TRANSLATOR_CONFIG.get("key"):
         print("Error: Debes proporcionar la clave de Microsoft Translator con --ms-key o AZURE_TRANSLATOR_KEY.")
